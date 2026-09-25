@@ -1,6 +1,7 @@
 import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { guardTargets, isGuardedPath } from "../../src/guard.js";
 
@@ -94,4 +95,68 @@ describe("isGuardedPath", () => {
   it("allows a file whose name merely starts with memory but is not the directory", () => {
     expect(isGuardedPath("memory-notes.md", ws)).toBe(false);
   });
+});
+
+// F1: OpenClaw's write and edit tools strip one leading @, expand ~ and decode file:// before they
+// touch disk (resolveLocalPathToCwd), so the guard has to read a target the same way.
+describe("isGuardedPath reads targets the way OpenClaw's write tool does", () => {
+  let ws: string;
+  let home: string;
+  let savedHome: string | undefined;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "lumberroom-home-"));
+    ws = join(home, "ws");
+    mkdirSync(join(ws, "memory"), { recursive: true });
+    writeFileSync(join(ws, "MEMORY.md"), "x");
+    writeFileSync(join(ws, "notes.md"), "hi");
+    savedHome = process.env.HOME;
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+  });
+
+  it.each(["@MEMORY.md", "@USER.md", "@memory/x.md"])("blocks the @-reference %s", (target) => {
+    expect(isGuardedPath(target, ws)).toBe(true);
+  });
+
+  it("blocks an @-prefixed absolute path into the workspace", () => {
+    expect(isGuardedPath(`@${join(ws, "MEMORY.md")}`, ws)).toBe(true);
+  });
+
+  it("blocks a file:// URL that names a guarded file", () => {
+    expect(isGuardedPath(pathToFileURL(join(ws, "MEMORY.md")).href, ws)).toBe(true);
+    expect(isGuardedPath(`@${pathToFileURL(join(ws, "memory", "x.md")).href}`, ws)).toBe(true);
+  });
+
+  it("blocks a ~/ path that expands into the workspace", () => {
+    expect(isGuardedPath("~/ws/MEMORY.md", ws)).toBe(true);
+    expect(isGuardedPath("@~/ws/memory/x.md", ws)).toBe(true);
+  });
+
+  it("still allows an @-reference to an ordinary file", () => {
+    expect(isGuardedPath("@notes.md", ws)).toBe(false);
+    expect(isGuardedPath("~/ws/notes.md", ws)).toBe(false);
+  });
+
+  it.runIf(process.platform === "darwin" || process.platform === "win32")(
+    "blocks a guarded file reached through a workspace path in a different letter case",
+    () => {
+      const shouted = join(home.toUpperCase(), "WS", "MEMORY.md");
+      expect(isGuardedPath(shouted, ws)).toBe(true);
+      expect(isGuardedPath(join(home, "WS", "memory", "x.md"), ws)).toBe(true);
+    },
+  );
+
+  it.runIf(process.platform === "darwin" || process.platform === "win32")(
+    "blocks a different letter case even before the workspace exists on disk",
+    () => {
+      // The write tool creates missing parents, so a fresh workspace has no real path to canonicalise.
+      const fresh = join(home, "fresh");
+      expect(isGuardedPath(join(home, "FRESH", "MEMORY.md"), fresh)).toBe(true);
+    },
+  );
 });

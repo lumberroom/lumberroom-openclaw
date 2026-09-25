@@ -12,7 +12,7 @@ import {
 import type { OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { withFence } from "../../src/auth/fence.js";
+import { LOCK_STALE_MS, withFence } from "../../src/auth/fence.js";
 import { createOAuthAuth, REFRESH_SKEW_MS } from "../../src/auth/oauth.js";
 import { TokenStore, tokenPaths } from "../../src/auth/store.js";
 import { createTokenAuth } from "../../src/auth/token.js";
@@ -198,34 +198,49 @@ describe("OAuth guard", () => {
     expect(auth.status()).toBe("signed_in");
   });
 
-  it("a 5xx refresh inside the window proceeds with the live access token", async () => {
+  // F4: the engine spends the refresh token before the steps that can answer 500
+  // (ENG/src/authserver/routes.rs:774-869), and a proxy 502 or 504 can follow a spend too. A sent
+  // grant answered 5xx may have rotated, so the token leaves the disk as it does for a lost answer.
+  it("a 5xx refresh inside the window drops the refresh token and proceeds with the live access token", async () => {
     const pair = await signIn();
     clock = expiresAt() - REFRESH_SKEW_MS / 2;
+    const auth = handle();
     e.next({ route: "token", status: 503 });
-    expect(await handle().authorize(deadline())).toBe(`Bearer ${pair.access_token}`);
-    expect(onDisk()!.refresh_token).toBe(pair.refresh_token);
+    expect(await auth.authorize(deadline())).toBe(`Bearer ${pair.access_token}`);
+    expect(onDisk()!.refresh_token).toBeUndefined();
     expect(store.read().refreshStartedAt).toBeNull();
+    expect(await auth.authorize(deadline())).toBe(`Bearer ${pair.access_token}`);
     expect(grants()).toBe(1);
   });
 
-  it("a 5xx refresh past expiry is RefreshUnavailable", async () => {
-    const pair = await signIn();
+  it("a 5xx refresh past expiry drops the refresh token and asks for a sign-in", async () => {
+    await signIn();
     clock = expiresAt() + 1000;
     e.next({ route: "token", status: 500 });
-    await expect(handle().authorize(deadline())).rejects.toBeInstanceOf(RefreshUnavailable);
-    expect(onDisk()!.refresh_token).toBe(pair.refresh_token);
+    await expect(handle().authorize(deadline())).rejects.toBeInstanceOf(LoginRequired);
+    expect(onDisk()!.refresh_token).toBeUndefined();
+    expect(store.read().refreshStartedAt).toBeNull();
   });
 
-  it("a 503 whose body is an OAuth error is RefreshUnavailable and keeps the refresh token", async () => {
-    const pair = await signIn();
+  it("a 503 whose body is an OAuth error drops the refresh token", async () => {
+    await signIn();
     clock = expiresAt() + 1000;
     const auth = handle();
     e.next({ route: "token", status: 503, body: { error: "temporarily_unavailable", error_description: "restarting" } });
-    await expect(auth.authorize(deadline())).rejects.toBeInstanceOf(RefreshUnavailable);
-    expect(onDisk()!.refresh_token).toBe(pair.refresh_token);
-    expect(store.read().refreshStartedAt).toBeNull();
-    await auth.authorize(deadline());
-    expect(grants()).toBe(2);
+    await expect(auth.authorize(deadline())).rejects.toBeInstanceOf(LoginRequired);
+    expect(onDisk()!.refresh_token).toBeUndefined();
+    await expect(auth.authorize(deadline())).rejects.toBeInstanceOf(LoginRequired);
+    expect(auth.status()).toBe("expired_no_refresh");
+    expect(grants()).toBe(1);
+  });
+
+  it("a 500 after the engine spent the token never replays it, in this process or a peer", async () => {
+    await signIn();
+    clock = expiresAt() + 1000;
+    e.next({ route: "token", statusAfterRun: 500 });
+    await expect(handle().authorize(deadline())).rejects.toBeInstanceOf(LoginRequired);
+    await expect(handle().authorize(deadline())).rejects.toBeInstanceOf(LoginRequired);
+    expect(grants()).toBe(1);
     expect(e.replays).toBe(0);
   });
 
@@ -357,6 +372,47 @@ describe("OAuth guard", () => {
       return release;
     });
     await expect(handle().authorize(deadline())).rejects.toBeInstanceOf(RefreshUnavailable);
+    expect(grants()).toBe(0);
+    expect(onDisk()!.refresh_token).toBe(pair.refresh_token);
+    expect(store.read().refreshStartedAt).toBeNull();
+  });
+
+  // F12: the check after discovery runs before the marker write, so only the check inside the
+  // grant's fetch covers a lock lost while the marker goes to disk.
+  it("a lock lost after the in-flight marker is written stops the grant before it is sent", async () => {
+    await signIn();
+    clock = expiresAt() + 1000;
+    const real = lockfile.lock.bind(lockfile);
+    let compromise: (() => void) | null = null;
+    vi.spyOn(lockfile, "lock").mockImplementation(async (file, options) => {
+      const release = await real(file, options);
+      compromise = () => options?.onCompromised?.(Object.assign(new Error("stolen"), { code: "ECOMPROMISED" }));
+      return release;
+    });
+    vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      realRename(from, to);
+      if (store.read().refreshStartedAt !== null) compromise?.();
+    });
+    await expect(handle().authorize(deadline())).rejects.toBeInstanceOf(RefreshUnavailable);
+    expect(grants()).toBe(0);
+  });
+
+  // F13: a peer can take a lock stale from this process's stall before the in-flight marker is on
+  // disk, see no marker and send the same refresh token. The stalled holder must not send it too.
+  it("a stall under the fence before the marker is written aborts the refresh with nothing written or sent", async () => {
+    const pair = await signIn();
+    clock = expiresAt() + 1000;
+    const realNow = Date.now.bind(Date);
+    let offset = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => realNow() + offset);
+    const realRead = fs.readFileSync;
+    vi.spyOn(fs, "readFileSync").mockImplementation(((path: fs.PathOrFileDescriptor, options?: unknown) => {
+      // The reload inside the fence is the first read made while the lock exists.
+      if (offset === 0 && String(path) === tokenPaths(stateDir).file && fs.existsSync(tokenPaths(stateDir).lock)) offset = LOCK_STALE_MS;
+      return realRead(path, options as BufferEncoding);
+    }) as typeof fs.readFileSync);
+    await expect(handle().authorize(deadline())).rejects.toBeInstanceOf(RefreshUnavailable);
+    expect(offset).toBe(LOCK_STALE_MS);
     expect(grants()).toBe(0);
     expect(onDisk()!.refresh_token).toBe(pair.refresh_token);
     expect(store.read().refreshStartedAt).toBeNull();

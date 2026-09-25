@@ -40,3 +40,9 @@ export class MissingGrant extends Error {
     this.name = "MissingGrant";
   }
 }
+export class InputClosed extends Error {
+  constructor() {
+    super("stdin closed before every question had an answer; nothing was saved");
+    this.name = "InputClosed";
+  }
+}

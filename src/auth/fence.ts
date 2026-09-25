@@ -7,6 +7,10 @@ import { FenceTimeout } from "../errors.js";
 export const FENCE_TIMEOUT_MS = 30_000;
 export const LOCK_STALE_MS = 30_000;
 export const LOCK_UPDATE_MS = 10_000;
+// A peer can take the lock only after LOCK_STALE_MS with no mtime update, and the holder updates every
+// LOCK_UPDATE_MS, so a takeover needs a stall of at least their difference. The bound sits well under it.
+export const STALL_LIMIT_MS = 10_000;
+const HEARTBEAT_MS = 1000;
 
 export interface FenceHandle {
   compromised(): boolean;
@@ -48,9 +52,21 @@ export async function withFence<T>(lockPath: string, fn: (fence: FenceHandle) =>
       await new Promise((r) => setTimeout(r, Math.min(jitterMs(), left)));
     }
   }
+  // proper-lockfile sees a takeover only once its next update timer runs and an async stat returns.
+  // After a stall, work that was already due runs first and would still read "not compromised", so a
+  // heartbeat on the clock proper-lockfile's stale test uses marks any stall or clock jump past the bound.
+  let stalled = false;
+  let lastBeat = Date.now();
+  const beat = setInterval(() => {
+    const now = Date.now();
+    if (now - lastBeat > STALL_LIMIT_MS) stalled = true;
+    lastBeat = now;
+  }, HEARTBEAT_MS);
+  beat.unref();
   try {
-    return await fn({ compromised: () => compromised });
+    return await fn({ compromised: () => compromised || stalled || Date.now() - lastBeat > STALL_LIMIT_MS });
   } finally {
+    clearInterval(beat);
     try {
       await release();
     } catch {

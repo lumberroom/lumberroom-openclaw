@@ -214,7 +214,7 @@ The block lives at `plugins.entries.lumberroom.config`. The manifest's JSON Sche
 
 | key | default | meaning |
 |---|---|---|
-| `baseUrl` | `https://mcp.lumberroom.cloud` | Engine origin. One trailing `/` is dropped and `/mcp` appended unless present. `http` or `https` only. A value with a query, a fragment, userinfo, or no host fails, because text after `?` or `@` could pass for the host in the hosted check. |
+| `baseUrl` | `https://mcp.lumberroom.cloud` | Engine origin. One trailing `/` is dropped and `/mcp` appended unless present. `http` or `https` only. A value with a query, a fragment, userinfo, or no host fails, because text after `?` or `@` could pass for the host in the hosted check. The error names scheme, host and path only: userinfo, query and fragment show as placeholders, and text that is no URL is not echoed, since the message reaches the gateway log and, through the inert line, the model. |
 | `auth` | `oauth` | `oauth` or `token`. |
 | `token` | none | Secret input, required when `auth` is `token`. Setup writes the SecretRef `{source:"env", provider:"default", id:"LUMBERROOM_OPENCLAW_TOKEN"}` and the value to `$OPENCLAW_STATE_DIR/.env` (O24, O25). A self-hosted `AUTH_TOKENS` bearer or a hosted `lr_` token. |
 | `project` | `auto` | `auto`: the first entry of the turn's `activeProjectKeys` (`github.com/org/repo` or `path:/abs/root`), which the engine reduces to its last segment (E12); none when the list is empty. `none`: never send one. Anything else: sent as given. |
@@ -256,6 +256,9 @@ guard register whether or not the config is valid, so a typo never reopens the l
     // allow: [..., "lumberroom"]  only when plugins.allow is a non-empty list without it
   },
   // tools.alsoAllow: [..., "lumberroom"]  only for profiles L0 shows hiding plugin tools
+  hooks: { internal: { entries: { "session-memory": { enabled: false } } } },   // section 8.5
+  // messages.queue.mode and any steer or collect byChannel entry: "followup", and a summarize
+  // messages.queue.drop: "old", only when ownerIds is non-empty (section 9)
 }
 ```
 
@@ -371,7 +374,14 @@ Nothing latches "not signed in" for the life of the process. Each guard rereads 
    stale after 30 s with the holder refreshing its mtime every 10 s. Timeout: `FenceTimeout`,
    classified `unreachable`. When `proper-lockfile` reports the lock compromised (a peer took it
    after this process stalled past the stale bound), the refresh aborts if it has not sent the
-   grant; `fetchFn` checks that flag immediately before sending.
+   grant; the check runs before the marker write and again in `fetchFn` immediately before sending.
+   `proper-lockfile` learns of a takeover only when its next update timer runs and an async `stat`
+   returns, and after a stall, work that was already due runs first. So the fence also counts as
+   compromised once a 1 s heartbeat on `Date.now()`, the clock the stale test reads, shows a gap
+   over 10 s. A takeover needs a stall of at least 20 s (stale 30 s less the 10 s update), so any
+   stall that allows one trips the heartbeat first. A stall after the marker is on disk needs no
+   check: a peer that takes the lock reads the marker and drops the token. A stall before it is the
+   case the heartbeat covers, where a peer would see no marker and send the same token.
 2. Reload the file. A fresh pair from a peer: adopt it, release, done.
 3. `refreshStartedAt` is set: a holder died between sending a grant and saving its answer. Its
    refresh token may be spent. Drop the refresh token, clear the marker, release, `LoginRequired`.
@@ -390,10 +400,14 @@ Nothing latches "not signed in" for the life of the process. Each guard rereads 
    file changed in between; a sign-in or sign-out wins.
 8. **Answered 4xx:** clear the marker, latch "refused" for this file version, release,
    `LoginRequired`.
-9. **Answered 5xx, or never sent:** clear the marker, release, `RefreshUnavailable`. Inside the
-   60 s window the still-live access token carries the call; past expiry the call is `unreachable`.
+9. **Never sent:** clear the marker, release, `RefreshUnavailable`. Inside the 60 s window the
+   still-live access token carries the call; past expiry the call is `unreachable`.
+9a. **Answered 5xx:** the engine spends the token before the steps that can answer 500
+   (`ENG/src/authserver/routes.rs:774-869`), and a proxy 502 or 504 can follow a spend. Drop the
+   refresh token from the file as step 10 does, clear the marker, release. Inside the window the
+   still-live access token carries the call until it expires; past expiry, `LoginRequired`.
 
-Steps 8 and 9 read the HTTP status `fetchFn` recorded. The error class cannot tell them apart:
+Steps 8 and 9a read the HTTP status `fetchFn` recorded. The error class cannot tell them apart:
 `parseErrorResponse` picks it from the body's `error` code (S7), so a 503 whose body says
 `temporarily_unavailable` arrives as an `OAuthError` that is not a `ServerError`. The classes and
 their import paths (S6) serve the tests and the messages.
@@ -446,7 +460,7 @@ config:
 | registration | behaviour |
 |---|---|
 | `registerMemoryCapability` | `flushPlanResolver: () => null` as an own property, so a sidecar cannot supply one (O4, O5). `promptBuilder({availableTools})`: when `memory_write` is available, the server instructions (live, else cache, else snapshot), then "Lumberroom is the durable memory here. Record durable facts with memory_write." and "MEMORY.md, USER.md and memory/ in the workspace are read-only while lumberroom owns memory."; otherwise `[]`. No `runtime`, no `deterministicRecallToolName` in v1. |
-| `registerService` (`id: "lumberroom"`) | `start`: `sidecarCheck` on the live config first, logging one error when a switch is open (section 8.5); then `tools/list` on the hook client within 2000 ms. Success stores the live listing and writes `<stateDir>/lumberroom/tools-cache.json`. Failure keeps the cache or the snapshot, marks the listing degraded, and retries at most once a minute from the next hook call. `stop`: `client.close(3000)`, which settles auth first. Only in `registrationMode` `full`. |
+| `registerService` (`id: "lumberroom"`) | `start`: `sidecarCheck` on the live config first, logging one error when a switch is open (section 8.5); then `tools/list` on the hook client within 2000 ms. Success stores the live listing and writes `<stateDir>/lumberroom/tools-cache.json`. Failure keeps the cache or the snapshot, marks the listing degraded, and retries at most once a minute from the next digest hook or tool assembly, without waiting on the answer. `stop`: `client.close(3000)`, which settles auth first. Only in `registrationMode` `full`. |
 | `registerTool(factory, {names})` | One factory for all declared names (section 8.1). |
 | `on("before_prompt_build", digest)` | Section 8.2. |
 | `on("before_prompt_build", recall, {requiresToolAuthority: true})` | Section 8.3. |
@@ -513,9 +527,16 @@ or profile also governs recall), the breaker open. Then:
 - Targets: `event.derivedPaths` when present; else `params.path` and `params.file_path`; for
   `apply_patch` without derived paths, every `*** Add File:`, `*** Update File:`,
   `*** Delete File:` and `*** Move to:` line in the patch text.
-- Each target resolves against the workspace, then through the real path of its deepest existing
-  ancestor, which defeats `..` and symlinks. The comparison ignores case, since the default macOS
-  and Windows file systems do.
+- Each target is read the way OpenClaw's `write` and `edit` tools read it
+  (`OC/src/agents/sessions/tools/path-utils.ts`): one leading `@` stripped, `~` and `~/` expanded
+  against the OS home, `file://` decoded. The guard checks the target both with and without the
+  `@`, since the tool keeps a literal `@name` that exists, and blocks when either reading is
+  guarded.
+- Each reading resolves against the workspace, then through the native real path of its deepest
+  existing ancestor, which defeats `..` and symlinks. On darwin and win32 the comparison folds case
+  on both sides, since the default file systems there ignore it.
+- The hook context carries no tool cwd, so a relative target resolves against the workspace. A
+  session whose cwd is elsewhere, or a sandbox path such as `/workspace/MEMORY.md`, is not covered.
 - A target equal to `<ws>/MEMORY.md` or `<ws>/USER.md`, or inside `<ws>/memory/`, blocks the call:
   `{block: true, blockReason: "MEMORY.md, USER.md and memory/ are read-only while lumberroom owns memory. Record durable facts with memory_write."}`.
 - Any error inside the guard blocks the call; the host fails the hook closed as well (O10).
@@ -547,6 +568,25 @@ exec policy governs that surface.
   gate step 15).
 - **Reversal.** An owner going back to built-in memory runs `openclaw plugins enable memory-core`
   and points `plugins.slots.memory` at it.
+- **The session-memory hook.** OpenClaw's bundled `session-memory` internal hook writes
+  `<workspace>/memory/YYYY-MM-DD-HHMM.md` through `fs` on `/new`, `/reset` and auto-reset, with no
+  memory-slot check, and onboarding turns it on (`OC/src/commands/onboard-hooks.ts`). The write
+  guard never sees an `fs` write, and a later `import` would send those transcripts to the review
+  queue. Setup writes `hooks.internal.entries.session-memory.enabled: false`. `status` exits 1 with
+  `hooks.internal.entries.session-memory.enabled is not false` when OpenClaw would load the hook.
+  `src/config.ts` ports OpenClaw's rule (`OC/src/hooks/configured.ts`, `loader.ts`, `policy.ts`):
+  internal hooks run discovery when `hooks.internal.enabled` is true, an entry is not disabled, or
+  `load.extraDirs` names a directory; with entries declared and no extra directory, only the enabled
+  entries load; an entry with `enabled: false` never loads; `hooks.internal.enabled: false` loads
+  nothing. A unit test checks the port against OpenClaw's own `resolveInternalHookSelection`. Hook
+  installs sit in OpenClaw's state database, which no plugin API reads: an install with a hook list
+  only narrows the selection, and one with an empty list would open discovery unseen.
+- **Setup narrows an open hook selection.** With `hooks.internal.enabled: true` and no entries,
+  OpenClaw loads every discovered hook. Any entry, a disabled one included, turns that into an
+  allowlist of the enabled entries, and no entry form avoids it. Setup still writes the
+  `session-memory` entry and prints one more diff line before the confirm: `hooks.internal.entries:
+  listing session-memory narrows internal hooks to the entries named there; every other discovered
+  hook stops loading unless you list it`.
 - The flush is off (O5). It could not have reached lumberroom anyway (O6).
 - `MEMORY.md` and `USER.md` stay injected as bootstrap context and become read-only through the
   guard (O17). Suppressing that injection needs a memory `runtime`; that is outside v1.
@@ -559,9 +599,11 @@ The digest is the owner's whole readable store. Only the owner's turns may reach
 in the tool factory and in both prompt hooks, and fails closed where it cannot tell who is
 speaking. `promptBuilder` carries no memory content, only fixed lines, so it needs no gate.
 
-**Identity.** From a hook context: `sessionKey`, `channel`, `senderId`, `trigger`. From a tool
-context: `sessionKey`, `requesterSenderId`, and the channel from the session key's canonical shape,
-else the first segment of `messageChannel`; a tool context has no trigger, so it counts as `user`.
+**Identity.** From a hook context: `sessionKey`, `channel`, `senderId`, `trigger`, and the chat
+from `chatId`, else `channelId`, else `channelContext.chat.id`. From a tool context: `sessionKey`,
+`requesterSenderId`, the chat from `nativeChannelId`, and the channel from the session key's
+canonical shape, else the first segment of `messageChannel`; a tool context has no trigger, so it
+counts as `user`.
 
 **Rules, in order.**
 
@@ -570,7 +612,19 @@ else the first segment of `messageChannel`; a tool context has no trigger, so it
    gives subagents no provider.
 3. A trigger outside `triggers`: refused.
 4. **Shared session**: the rest of the session key after `agent:<id>:` has a `group`, `channel` or
-   `thread` segment, or matches a legacy group shape (O22).
+   `thread` segment, or matches a legacy group shape (O22). A turn also counts as shared when the
+   host config routes rooms onto its key and the turn may have come from a room. That covers
+   `session.groupScope: "main"`, set globally or on any binding, which sends rooms to
+   `agent:<id>:<session.mainKey>`, and `session.scope: "global"`, which sends every turn to
+   `global`. The key cannot tell a room from a DM there, so the context decides. OpenClaw sets the
+   hook `chatId` on every turn and falls back to the channel name
+   (`OC/src/plugins/hook-agent-context.ts`), so a chat equal to the channel names no room, and a
+   chat equal to the sender is a DM. A turn may have come from a room when its chat differs from
+   both, or when it carries a sender and no chat. Turns on OpenClaw's internal `webchat` channel
+   (the Control UI, the TUI, and gateway clients such as the CLI, which OpenClaw gives sender id
+   `cli`) never count: every one of them holds the operator credential. The plugin reads the root
+   config per turn through `api.runtime.config.current()`; a read that throws counts as rooms routed
+   there.
    - `ownerIds` empty: refused.
    - `senderId` missing: refused.
    - `<channel>:<senderId>` not in `ownerIds`: refused.
@@ -580,6 +634,23 @@ else the first segment of `messageChannel`; a tool context has no trigger, so it
 
 A refused turn gets no digest, no recall, no tools and no call to the engine. The tool factory
 returns `null`, so the model sees no lumberroom tool on that turn.
+
+**Steering.** OpenClaw's default queue mode, `steer`, injects a message that arrives mid-run into
+the active run. It does not split messages by sender or change the run's tools, and the steering
+fingerprint leaves the sender out (`OC/docs/concepts/queue-steering.md`,
+`OC/src/auto-reply/reply/reply-tool-authority.ts`). `collect` can fold several senders into one
+turn. Either one lets a non-owner's message reach an owner's run that holds lumberroom tools. The
+plugin gates at factory and hook time and has no per-sender check in `execute`, since the host
+hands none. So when `ownerIds` is non-empty, setup sets `messages.queue.mode` and every `steer` or
+`collect` entry in `messages.queue.byChannel` to `followup`, and `status` names any that are not
+`followup` or `interrupt`. A per-session `/queue steer` override still wins over config.
+
+**Overflow.** `messages.queue.drop` defaults to `summarize`: past `cap` (default 20) the oldest queued
+messages become summary lines injected as one synthetic followup prompt
+(`OC/docs/concepts/queue.md`, `OC/src/utils/queue-helpers.ts`). That prompt can carry several
+senders' text into a turn that holds the owner's identity. With `ownerIds` non-empty, setup sets
+`drop` to `old`, and `status` names `summarize`, set or defaulted. `new` also passes, since it rejects
+the newest message and merges nothing.
 
 **Transports that cannot be listed.** The gateway's HTTP chat surfaces run on the internal
 `webchat` channel, where the caller picks the session key and the claimed channel and no sender id
@@ -663,6 +734,7 @@ the recall hook share it. Tool calls ignore it: the model asked for them.
 | 401, token mode | nothing | `lumberroom refused the configured token (401). Check plugins.entries.lumberroom.config.token and its grant.` |
 | 401, OAuth, refresh refused, or no token file | the login line once per session | `lumberroom is not signed in. Run: openclaw lumberroom login` |
 | OAuth, access token near expiry, refresh token live | the fence refreshes; the call proceeds | same |
+| OAuth, the refresh answered 5xx | the refresh token is dropped; the live access token carries calls until expiry, then the login line | login text after expiry |
 | a peer refreshing at the same moment | wait up to 30 s, adopt the peer's pair | same |
 | fence wait over 30 s | unreachable | unreachable |
 | rotated pair the disk refused | unreachable; retried on the next call | `lumberroom renewed the sign-in and could not save it (<errno>). Nothing was stored.` for a write |
@@ -716,11 +788,20 @@ posts nothing. The files stay on disk.
 ## 14. Setup and the CLI
 
 `api.registerCli` adds `openclaw lumberroom` with `descriptors: [{name: "lumberroom", description,
-hasSubcommands: true}]` and the manifest's `cliCommands`. Actions read the resolved
+hasSubcommands: true}]` and the manifest's `cliCommands`. Actions read
 `api.pluginConfig`, resolving a SecretRef `token` through `openclaw/plugin-sdk/secret-input-runtime`
 because the CLI host passes it unresolved, then `resolveStateDir()` and `mutateConfigFile`; none
 touches `api.runtime` (O28).
-Every action settles auth before it returns.
+Every action settles auth before it returns. Each action opens its own terminal io and closes it
+before returning. Nothing touches stdin at register time: a terminal-mode readline puts stdin in raw
+mode, which would swallow Ctrl-C in a foreground gateway. The secret prompt closes any open
+readline first, since one still attached echoes every keystroke.
+
+Piped stdin (not a TTY) delivers every line at once, before the questions that want them, and
+readline's `question()` drops a line nobody waits for. Piped answers go through one queue fed by a
+`terminal: false` readline's `line` event, so nothing read is echoed to a TTY stdout, a secret
+included. When stdin ends with a question pending, the action prints "stdin closed before every
+question had an answer; nothing was saved" and exits 1.
 
 **`setup`**, interactive. Nothing is saved until every answer is validated.
 
@@ -729,12 +810,15 @@ Every action settles auth before it returns.
 2. Auth. Hosted: "Sign in with a browser" (Enter) or "Paste an API token (lr_...)". Self-hosted:
    `oauth` or `token`.
 3. Validate: token mode reads the token hidden and runs `GET /admin/whoami` with it; OAuth runs the
-   sign-in (section 7.2) and then `tools/list`. A failure prints the reason and saves nothing.
+   sign-in (section 7.2) into a staging directory beside `oauth.json` and then `tools/list` with
+   the staged tokens. A failure prints the reason and saves nothing, `oauth.json` included.
 4. Hosted only: "Let OpenClaw work the lumberroom.cloud dreaming queue?" default No.
 5. Owners: optional `channel:senderId` list, each checked by `resolveConfig`.
 6. Print the diff of section 5, ask to confirm, then `mutateConfigFile` with `afterWrite:
    {mode: "restart", reason: "lumberroom took the memory slot"}`. Token mode also writes
-   `LUMBERROOM_OPENCLAW_TOKEN=<token>` to `$OPENCLAW_STATE_DIR/.env` with mode 0600.
+   `LUMBERROOM_OPENCLAW_TOKEN=<token>` to `$OPENCLAW_STATE_DIR/.env` with mode 0600. OAuth mode
+   then renames the staged `oauth.json` over the live one under the fence. An abort removes the
+   staging directory and leaves the running sign-in alone.
 7. When `MEMORY.md`, `USER.md` or `memory/*.md` hold entries, offer `import`.
 
 **Commands.**
@@ -744,7 +828,7 @@ Every action settles auth before it returns.
 | `setup` | above | 0 saved, 1 aborted or failed |
 | `login [--no-browser]` | section 7.2; refuses in token mode | 0 signed in, 1 failed |
 | `logout` | deletes `oauth.json` under the fence | 0 |
-| `status [--json]` | config, auth mode, credential presence, slot owner, `allowConversationAccess`, both sidecar switches, then a live `tools/list` (tools, server info, protocol, round trip ms) and `GET /admin/whoami` (`may_ingest`, `may_delete`) | 0 when reachable, signed in, slot owned, conversation access granted and both sidecar switches off; 1 otherwise, naming each problem. An open switch reads `plugins.entries.lumberroom.config.dreaming.enabled is not false` or `plugins.entries.memory-core.enabled is not false` |
+| `status [--json]` | config, auth mode, credential presence, slot owner, `allowConversationAccess`, both sidecar switches, the session-memory hook, the queue mode and drop policy when `ownerIds` is set, then a live `tools/list` (tools, server info, protocol, round trip ms) and `GET /admin/whoami` (`may_ingest`, `may_delete`) | 0 when reachable, signed in, slot owned, conversation access granted, both sidecar switches off, the session-memory hook off and, with owners listed, every queue mode `followup` or `interrupt` and the drop policy `old` or `new`; 1 otherwise, naming each problem. An open switch reads `plugins.entries.lumberroom.config.dreaming.enabled is not false` or `plugins.entries.memory-core.enabled is not false` |
 | `import [--dry-run] [--workspace <dir>]` | section 13 | 0, 1 on failure, 2 for a missing grant |
 
 `status` exists because a loaded plugin proves nothing about the engine.
@@ -809,6 +893,7 @@ that matter most:
 - a rotated pair the disk refused stays in memory, the spent token leaves the disk, and the next
   guard saves it;
 - a `refreshStartedAt` marker left by a dead holder drops the refresh token instead of presenting it;
+- a stall under the fence before the marker is written aborts the refresh with nothing written or sent;
 - `settle` waits out a refresh in flight before `stop` closes the clients.
 
 **Contract (vitest, `openclaw` 2026.9.6 installed as a dev dependency).** Import every

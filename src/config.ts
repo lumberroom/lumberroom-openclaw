@@ -36,6 +36,18 @@ const KNOWN = new Set<string>([
 ]);
 const TRIGGERS: readonly Trigger[] = ["user", "cron", "heartbeat"];
 
+/**
+ * What a ConfigError may say about a rejected baseUrl. The message reaches the gateway log and the
+ * model through the inert line, so userinfo, query and fragment never appear, and neither does text
+ * that is no URL at all (a token pasted into the wrong field).
+ */
+function describeRejected(url: URL | null): string {
+  if (!url) return "a value that is not a URL";
+  const userinfo = url.username || url.password ? "<credentials>@" : "";
+  const tail = `${url.search ? "?<query>" : ""}${url.hash ? "#<fragment>" : ""}`;
+  return JSON.stringify(`${url.protocol}//${userinfo}${url.host}${url.pathname}${tail}`);
+}
+
 /** The engine origin, with one trailing slash and a trailing /mcp removed. */
 export function normalizeBaseUrl(raw: unknown): string {
   if (raw === undefined || raw === null) return HOSTED_BASE_URL;
@@ -47,15 +59,15 @@ export function normalizeBaseUrl(raw: unknown): string {
   try {
     url = new URL(text);
   } catch {
-    throw new ConfigError(`baseUrl must start with http:// or https://, got ${JSON.stringify(raw)}`);
+    throw new ConfigError(`baseUrl must start with http:// or https://, got ${describeRejected(null)}`);
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new ConfigError(`baseUrl must start with http:// or https://, got ${JSON.stringify(raw)}`);
+    throw new ConfigError(`baseUrl must start with http:// or https://, got ${describeRejected(url)}`);
   }
   // Text after "?", "#" or "@" can pass for the host in isHosted while the client connects elsewhere:
   // https://evil.example?.lumberroom.cloud and https://lumberroom.cloud@evil.example both.
   if (/[?#]/.test(text) || url.username || url.password || !url.hostname) {
-    throw new ConfigError(`baseUrl must be a plain origin such as https://host, got ${JSON.stringify(raw)}`);
+    throw new ConfigError(`baseUrl must be a plain origin such as https://host, got ${describeRejected(url)}`);
   }
   let path = url.pathname.replace(/\/+$/, "");
   if (path.endsWith("/mcp")) path = path.slice(0, -"/mcp".length);
@@ -92,6 +104,81 @@ export function sidecarCheck(root: unknown): SidecarCheck {
     dreamingOff: dreaming.enabled === false,
     memoryCoreOff: core.enabled === false || deny.includes(MEMORY_CORE_ID),
   };
+}
+
+// Modes that start each message as its own turn, so the owner gate sees every sender.
+const SAFE_QUEUE_MODES = new Set(["followup", "interrupt"]);
+// Overflow policies that never fold one sender's message into another's turn.
+const SAFE_QUEUE_DROPS = new Set(["old", "new"]);
+
+export interface UnsafeQueueModes {
+  mode: string | null; // the global mode when it steers or collects, else null
+  drop: string | null; // the overflow policy when it summarizes, else null
+  byChannel: Array<{ channel: string; mode: string }>;
+}
+
+/**
+ * OpenClaw steers a message that arrives mid-run into that run, whoever sent it, and the run keeps
+ * the tools its first sender was granted (OC docs/concepts/queue-steering.md, "Scope"). collect can
+ * fold several senders into one turn. Either one hands a non-owner the owner's lumberroom tools.
+ * The default drop, summarize, folds dropped messages into a synthetic turn the same way
+ * (OC docs/concepts/queue.md). Unset mode reads as steer and unset drop as summarize, as the host does.
+ */
+export function unsafeQueueModes(root: unknown): UnsafeQueueModes {
+  const rec = (v: unknown): Record<string, unknown> => (isRecord(v) ? v : {});
+  const queue = rec(rec(rec(root).messages).queue);
+  const mode = typeof queue.mode === "string" ? queue.mode.toLowerCase() : "steer";
+  const drop = typeof queue.drop === "string" ? queue.drop.toLowerCase() : "summarize";
+  const byChannel = Object.entries(rec(queue.byChannel))
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string" && !SAFE_QUEUE_MODES.has(entry[1].toLowerCase()))
+    .map(([channel, m]) => ({ channel, mode: m }));
+  return { mode: SAFE_QUEUE_MODES.has(mode) ? null : mode, drop: SAFE_QUEUE_DROPS.has(drop) ? null : drop, byChannel };
+}
+
+export const SESSION_MEMORY_HOOK = "session-memory";
+
+export interface InternalHookSelection {
+  configured: boolean; // OpenClaw runs internal hook discovery at all
+  names: Set<string> | null; // null loads every discovered hook; a set loads only those names
+}
+
+/**
+ * OpenClaw's resolveInternalHookSelection (OC src/hooks/configured.ts) over the config alone. Hook
+ * installs sit in OpenClaw's state database, which no plugin API reads. An install with a hook list
+ * only narrows the selection further; one with an empty list opens discovery, and this cannot see it.
+ */
+export function internalHookSelection(root: unknown): InternalHookSelection {
+  const rec = (v: unknown): Record<string, unknown> => (isRecord(v) ? v : {});
+  const internal = rec(rec(rec(root).hooks).internal);
+  const extraDirs = rec(internal.load).extraDirs;
+  const open = Array.isArray(extraDirs) && extraDirs.some((dir) => typeof dir === "string" && dir.trim().length > 0);
+  const entries = Object.entries(rec(internal.entries));
+  const names = new Set<string>();
+  let declared = 0;
+  for (const [name, entry] of entries) {
+    const trimmed = name.trim();
+    if (!trimmed) continue;
+    declared += 1;
+    if (rec(entry).enabled !== false) names.add(trimmed);
+  }
+  if (internal.enabled === false) return { configured: false, names: new Set() };
+  return {
+    configured: internal.enabled === true || entries.some(([, entry]) => rec(entry).enabled !== false) || open,
+    names: open || (declared === 0 && internal.enabled === true) ? null : names,
+  };
+}
+
+/**
+ * OpenClaw's bundled session-memory hook writes <workspace>/memory/*.md through fs on /new, /reset
+ * and auto-reset, where the write guard never sees it (OC src/hooks/bundled/session-memory). It loads
+ * when discovery runs, the selection admits it, and its own entry is not enabled: false
+ * (OC src/hooks/loader.ts, src/hooks/policy.ts).
+ */
+export function sessionMemoryHookOff(root: unknown): boolean {
+  const rec = (v: unknown): Record<string, unknown> => (isRecord(v) ? v : {});
+  const { configured, names } = internalHookSelection(root);
+  const entry = rec(rec(rec(rec(rec(root).hooks).internal).entries)[SESSION_MEMORY_HOOK]);
+  return !configured || (names !== null && !names.has(SESSION_MEMORY_HOOK)) || entry.enabled === false;
 }
 
 function stringList(block: Record<string, unknown>, key: string): string[] | undefined {

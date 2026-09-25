@@ -1,6 +1,7 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { DEFAULT_TRIGGERS } from "./config.js";
-import { identityFromHookCtx, turnAllowed } from "./gate.js";
+import { hostRootConfig, identityFromHookCtx, turnAllowed } from "./gate.js";
+import { retryListingIfDegraded } from "./service.js";
 import { GUARDED_TOOLS, GUARD_REASON, guardTargets, isGuardedPath } from "./guard.js";
 import {
   DATA_NOTE,
@@ -66,8 +67,11 @@ async function digestHandler(_event: unknown, rawCtx: unknown, deps: PluginDeps)
   const ctx = rawCtx as HookCtxLike;
   try {
     const cfg = deps.state.cfg;
-    if (!cfg || !cfg.recall || !cfg.digest) return undefined;
-    if (!turnAllowed(identityFromHookCtx(ctx), cfg).allowed) return undefined;
+    if (!cfg) return undefined;
+    if (!turnAllowed(identityFromHookCtx(ctx, hostRootConfig(deps)), cfg).allowed) return undefined;
+    // After the gate: a refused turn sends nothing to the engine, tools/list included.
+    retryListingIfDegraded(deps);
+    if (!cfg.recall || !cfg.digest) return undefined;
     if (!deps.state.breaker.allow()) return undefined;
 
     const key = sessionCacheKey(ctx);
@@ -103,7 +107,7 @@ async function recallHandler(rawEvent: unknown, rawCtx: unknown, deps: PluginDep
     const cfg = deps.state.cfg;
     if (cfg && !cfg.recall) return undefined;
     const gateCfg = cfg ?? INERT_GATE_CFG;
-    if (!turnAllowed(identityFromHookCtx(ctx), gateCfg).allowed) return undefined;
+    if (!turnAllowed(identityFromHookCtx(ctx, hostRootConfig(deps)), gateCfg).allowed) return undefined;
 
     const key = sessionCacheKey(ctx);
 

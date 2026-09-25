@@ -181,6 +181,7 @@ configure() {  # configure STATE WORKSPACE BASE_URL AUTH
   "discovery": { "mdns": { "mode": "off" } },
   "logging": { "file": "$1/openclaw.log" },
   "cron": { "enabled": false },
+  "messages": { "queue": { "mode": "followup", "drop": "old" } },
   "agents": { "defaults": { "workspace": "$2", "heartbeat": { "every": "0m" } } },
   "plugins": {
     "slots": { "memory": "lumberroom" },

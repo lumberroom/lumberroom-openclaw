@@ -21,6 +21,7 @@ export type Behaviour =
   | { route: Route; status: number; body?: unknown } // answer this status once
   | { route: Route; delayMs: number } // hold the answer once
   | { route: Route; dropAfterBody: true } // read the body, then destroy the socket once
+  | { route: Route; statusAfterRun: number } // run the request (a refresh rotates), then answer this status once
   | { route: "mcp"; tool: string; isError: string }; // the next call of that tool fails
 
 export interface FakeEngineOptions {
@@ -548,11 +549,15 @@ export async function startFakeEngine(opts: FakeEngineOptions = {}): Promise<Fak
       send(res, { status: behaviour.status, body: behaviour.body ?? { error: "fake_status", detail: `status ${behaviour.status} from the behaviour queue` } });
       return;
     }
-    // Delay and drop still run the request first, so a write lands and a refresh rotates. That is
+    // Delay, drop and statusAfterRun still run the request first, so a write lands and a refresh rotates. That is
     // the case a caller has to handle: the engine acted and the answer never arrived.
     const reply = answer(method, target.pathname, target.searchParams, headers, body);
     if (behaviour && "dropAfterBody" in behaviour) {
       req.socket.destroy();
+      return;
+    }
+    if (behaviour && "statusAfterRun" in behaviour) {
+      send(res, { status: behaviour.statusAfterRun, body: { error: "server_error", error_description: "failed after the request ran" } });
       return;
     }
     if (behaviour && "delayMs" in behaviour) {

@@ -41,7 +41,15 @@ export default definePluginEntry({
     const full = api.registrationMode === "full";
     const auth = cfg && full ? makeAuth(cfg, stateDir) : null;
     const client = cfg && auth ? createEngineClient(cfg, auth, { version: VERSION }) : null;
-    const deps: PluginDeps = { state: createState(cfg, inert, stateDir), client, auth, stateDir, logger: api.logger, now: Date.now };
+    const deps: PluginDeps = {
+      state: createState(cfg, inert, stateDir),
+      client,
+      auth,
+      stateDir,
+      logger: api.logger,
+      now: Date.now,
+      rootConfig: () => api.runtime.config.current(),
+    };
 
     // Both register whatever the config says, so a typo can never reopen the local store.
     api.registerMemoryCapability(buildCapability(deps));
@@ -57,15 +65,15 @@ export default definePluginEntry({
     registerLumberroomCli(api, {
       pluginConfig: api.pluginConfig,
       stateDir: resolveStateDir,
-      io: createCliIo(),
+      makeIo: createCliIo,
       mutateConfig: async (mutate) => {
         await mutateConfigFile({
           mutate: (draft) => mutate(draft as unknown as Record<string, unknown>),
           afterWrite: { mode: "restart", reason: "lumberroom took the memory slot" },
         });
       },
-      makeClient: (c) => {
-        const a = makeAuth(c, resolveStateDir());
+      makeClient: (c, opts) => {
+        const a = makeAuth(c, opts?.stateDir ?? resolveStateDir());
         return { client: createEngineClient(c, a, { version: VERSION }), auth: a };
       },
     });

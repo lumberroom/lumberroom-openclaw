@@ -2,7 +2,9 @@
 
 ## [Unreleased]
 
-The first release, 1.0.0, for OpenClaw 2026.9.6 and later on Node 24.16 or 26.1 and later.
+## [1.0.0] - 2026-09-26
+
+The first release, for OpenClaw 2026.9.6 and later on Node 24.16 or 26.1 and later.
 
 ### Added
 
@@ -16,10 +18,14 @@ The first release, 1.0.0, for OpenClaw 2026.9.6 and later on Node 24.16 or 26.1 
   config picks from the rest. `dreamingReview` adds `review_queue` and `review_decide` on
   lumberroom.cloud.
 - An owner gate for shared chats. Group, channel and thread turns reach memory only when the sender
-  is listed in `ownerIds`. A refused turn gets no digest, no recall, no tools and no engine call.
+  is listed in `ownerIds`, and so does a turn from a room on the main or global session when
+  `session.groupScope` or `session.scope` routes rooms there. The Control UI, the TUI and the CLI
+  keep their digest and recall there. A refused turn gets no digest, no
+  recall, no tools and no engine call.
 - A write guard. `write`, `edit` and `apply_patch` against `MEMORY.md`, `USER.md` or `memory/` in
-  the workspace are blocked with a reason that points the model at `memory_write`. The guard stays
-  on when the config is invalid.
+  the workspace are blocked with a reason that points the model at `memory_write`. The guard reads
+  `@`, `~/` and `file://` targets the way OpenClaw's tools do and ignores letter case on macOS and
+  Windows. It stays on when the config is invalid.
 - Two sign-in modes. `token` reads a static bearer or an `lr_` API token from
   `$OPENCLAW_STATE_DIR/.env`. `oauth` signs in through a browser or a pasted redirect URL, and
   refreshes under a file lock, so a gateway and a CLI process sharing one token file never replay a
@@ -32,3 +38,8 @@ The first release, 1.0.0, for OpenClaw 2026.9.6 and later on Node 24.16 or 26.1 
 - The gateway logs an error at start when either dreaming-sidecar switch is open.
 - A bundled snapshot of the engine's tool listing, so the plugin offers its tools before the first
   live `tools/list` answers, and a cache of the last live listing under the state directory.
+- Setup turns off OpenClaw's `session-memory` hook, which writes `memory/*.md` through `fs` where
+  the write guard cannot see it; `status` names it when it is on.
+- With owners listed, setup sets the message queue to `followup`, so a non-owner's message cannot
+  steer into an owner's running turn, and its overflow to `drop: "old"`, so dropped messages never
+  fold into one turn; `status` names any `steer` or `collect` mode and a `summarize` drop.

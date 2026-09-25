@@ -97,6 +97,9 @@ export interface HookCtxLike {
   activeProjectKeys?: readonly string[];
   channel?: string;
   senderId?: string;
+  chatId?: string;
+  channelId?: string;
+  channelContext?: { chat?: { id?: string } };
   trigger?: string;
   toolAuthority?: { allows(toolName: string): boolean };
 }
@@ -107,6 +110,7 @@ export interface ToolCtxLike {
   sessionId?: string;
   messageChannel?: string;
   requesterSenderId?: string;
+  nativeChannelId?: string;
   activeProjectKeys?: readonly string[];
 }
 
@@ -114,7 +118,10 @@ export interface TurnIdentity {
   sessionKey?: string;
   channel?: string;
   senderId?: string;
+  chatId?: string;
   trigger?: string;
+  /** The host config routes rooms onto this key (the main or global session). */
+  roomsRouteHere?: boolean;
 }
 
 export type GateReason = "incognito" | "subagent" | "trigger" | "no_owners" | "no_author" | "not_owner";
@@ -154,6 +161,8 @@ export interface PluginDeps {
   stateDir: string;
   logger: PluginLoggerLike;
   now(): number;
+  /** The host's root config, read per turn for session routing. Absent in unit tests. */
+  rootConfig?(): unknown;
 }
 
 export interface ImportEntry {

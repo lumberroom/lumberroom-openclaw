@@ -48,12 +48,17 @@ not, run `openclaw gateway restart` before the plugin is live.
    Self-hosted asks for `oauth` or `token` directly. A self-hosted engine running
    `AUTH_MODE=token` only accepts `token`; one running OAuth accepts either.
 3. **Validation**, before anything is saved. Token mode reads the token with echo off and checks
-   it against `GET /admin/whoami`. OAuth mode runs the sign-in and then `tools/list`. A failure
-   here prints the reason and saves nothing.
+   it against `GET /admin/whoami`. OAuth mode runs the sign-in into a staging copy and then
+   `tools/list`. A failure here prints the reason and saves nothing; the gateway's current sign-in
+   stays in place until you confirm.
 4. **Dreaming review**, hosted only, default no: whether OpenClaw may list and act on
    lumberroom.cloud's dreaming queue (`review_queue`, `review_decide`).
 5. **Owners**, optional: a comma-separated list of `channel:senderId` entries for shared chats.
-6. A diff of what will change, then a confirmation before it writes anything.
+6. A diff of what will change, then a confirmation before it writes anything. Setup also turns off
+   OpenClaw's `session-memory` hook, which writes `memory/*.md` directly, and with owners listed
+   sets the message queue to `followup` and its overflow to `drop: "old"` (see The owner gate).
+   With `hooks.internal.enabled` on and no entries, OpenClaw loads every hook it finds; listing
+   `session-memory` turns that into a list of named hooks, and the diff says so before you confirm.
 7. If `MEMORY.md`, `USER.md` or `memory/*.md` already hold entries, an offer to run `import`.
 
 Sign-in for OAuth opens a browser to a loopback callback on `oauthCallbackPort` (default 47632).
@@ -66,7 +71,7 @@ Other commands, each under `openclaw lumberroom`:
 |---|---|
 | `login [--no-browser]` | Runs the OAuth sign-in on its own. Refuses in token mode. |
 | `logout` | Deletes the stored OAuth tokens. Does not revoke them on the server. |
-| `status [--json]` | Reachability, sign-in, slot ownership, conversation access, both dreaming-sidecar switches, the live tool list and server info, and the credential's `may_ingest` / `may_delete` grants. Exits 1 and names every problem it found. |
+| `status [--json]` | Reachability, sign-in, slot ownership, conversation access, both dreaming-sidecar switches, the `session-memory` hook (by OpenClaw's own selection rule), the queue mode and drop policy when owners are listed, the live tool list and server info, and the credential's `may_ingest` / `may_delete` grants. Exits 1 and names every problem it found. |
 | `import [--dry-run] [--workspace <dir>]` | See Import below. |
 
 ## Configuration
@@ -109,7 +114,9 @@ runs in the tool factory and in both prompt hooks, in this order:
 2. A subagent session is refused. The plugin cannot see which turn spawned it.
 3. A trigger outside `triggers` is refused.
 4. A **shared session** (a group, channel or thread) is refused unless `ownerIds` is non-empty,
-   the turn carries a sender id, and `channel:senderId` is in that list.
+   the turn carries a sender id, and `channel:senderId` is in that list. When `session.groupScope`
+   is `main` (globally or on a binding) or `session.scope` is `global`, rooms land on the main or
+   global session, so a turn there that may have come from a room is held to the same rule.
 5. Everything else (direct chats, the main session, cron, ACP, local CLI, TUI, the Control UI) is
    allowed.
 
@@ -117,6 +124,19 @@ A refused turn gets no digest, no recall, no tools, and makes no request to the 
 
 Consequences worth knowing:
 
+- OpenClaw's default queue mode steers a message that arrives mid-run into the running turn,
+  whoever sent it, and that turn keeps its tools. With owners listed, setup sets
+  `messages.queue.mode` (and any `steer` or `collect` entry under `byChannel`) to `followup` so
+  each message gets its own gated turn; `status` flags anything else. A `/queue steer` typed in
+  the chat still overrides it for that session.
+- When the queue overflows, OpenClaw's default drop policy, `summarize`, folds the dropped messages
+  into one synthetic turn, whoever sent them. With owners listed, setup sets `messages.queue.drop`
+  to `old`; `status` flags `summarize`.
+- With `groupScope` `main` or `scope` `global`, the plugin reads the room from the turn. A turn
+  whose chat id differs from both the channel and the sender counts as a room, and so does a turn
+  with a sender and no chat. A Telegram DM, whose chat id is the sender's id, does not. A Slack or
+  Discord DM has its own channel id and counts as a room, so list yourself in `ownerIds`. The
+  Control UI, the TUI and the CLI speak on OpenClaw's internal `webchat` channel and never count.
 - Whoever OpenClaw's own DM policy admits to a direct chat reaches the owner's memory. This plugin
   does not add a second access check on top of OpenClaw's.
 - A per-turn recall block never enters the transcript, so a later message in a shared chat cannot
@@ -142,6 +162,7 @@ would skip the engine's own duplicate check.
 | token mode, 401 | nothing | "lumberroom refused the configured token (401). Check `plugins.entries.lumberroom.config.token` and its grant." |
 | OAuth, not signed in or the refresh was refused | a login line once per session | "lumberroom is not signed in. Run: `openclaw lumberroom login`" |
 | OAuth, access token near expiry with a live refresh token | one refresh runs under a cross-process lock; the call proceeds once it lands | same |
+| OAuth, the refresh answered 5xx | the engine may have spent the refresh token, so it is dropped; calls use the access token until it expires, then the login line | "lumberroom is not signed in" after expiry |
 | config invalid | an inert line once per session | no lumberroom tool is offered at all |
 | the owner gate refuses the turn | nothing | no lumberroom tool is offered at all |
 

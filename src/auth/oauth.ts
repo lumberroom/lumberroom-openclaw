@@ -325,8 +325,16 @@ class OAuthAuth implements AuthHandle {
       this.forgetRefreshToken();
       throw new LoginRequired(`a lumberroom token refresh got no answer, so the stored sign-in cannot be trusted. ${RUN_LOGIN}`);
     }
+    if (status >= 500) {
+      // The engine spends the token before the steps that can answer 500, and a proxy 502 or 504 can
+      // arrive after a spend. Presenting it again would revoke the family (routes.rs:774-869).
+      this.forgetRefreshToken();
+      const message = `the lumberroom token refresh failed (HTTP ${status}) after it was sent, so the refresh token was dropped. ${RUN_LOGIN}`;
+      // RefreshUnavailable lets authorize() keep serving the access token until it expires.
+      if (this.live()) throw new RefreshUnavailable(message);
+      throw new LoginRequired(message);
+    }
     this.clearMarker();
-    if (status >= 500) throw new RefreshUnavailable(`the lumberroom token refresh failed (HTTP ${status}): ${reason(e)}`);
     this.refusedAt = this.seen;
     throw new LoginRequired(`lumberroom refused the stored sign-in (HTTP ${status}). ${RUN_LOGIN}`);
   }

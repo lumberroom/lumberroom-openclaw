@@ -37,6 +37,12 @@ export async function refreshListing(deps: PluginDeps): Promise<void> {
   // Any other outcome leaves the cache or snapshot already in state, degraded rather than replaced.
 }
 
+/** For hooks and the tool factory: never awaited, and refreshListing's clock holds it to once a minute. */
+export function retryListingIfDegraded(deps: PluginDeps): void {
+  if (deps.state.listingSource === "live" || !deps.client) return;
+  refreshListing(deps).catch((err: unknown) => deps.logger.warn(`lumberroom: tools/list retry failed: ${String(err)}`));
+}
+
 export function registerLumberroomService(api: OpenClawPluginApi, deps: PluginDeps): void {
   // Sockets and clients only exist in full registration; discovery and cli-metadata modes must not
   // start them (spec 8: "Only in registrationMode full").

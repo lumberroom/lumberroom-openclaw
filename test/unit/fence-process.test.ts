@@ -12,7 +12,7 @@ import {
 } from "@modelcontextprotocol/sdk/client/auth.js";
 import lockfile from "proper-lockfile";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { withFence, withFenceSync } from "../../src/auth/fence.js";
+import { LOCK_STALE_MS, LOCK_UPDATE_MS, STALL_LIMIT_MS, withFence, withFenceSync } from "../../src/auth/fence.js";
 import { createOAuthAuth } from "../../src/auth/oauth.js";
 import { TokenStore, tokenPaths } from "../../src/auth/store.js";
 import { resolveConfig } from "../../src/config.js";
@@ -93,6 +93,51 @@ describe("withFence", () => {
       return [before, fence.compromised()];
     });
     expect(seen).toEqual([false, true]);
+  });
+});
+
+// F13: proper-lockfile notices a takeover only when its next update timer runs and an async stat
+// returns. After a stall, code that was already due runs first, so the fence has to see the stall.
+describe("withFence after a stall", () => {
+  function jumpClock(): (ms: number) => void {
+    const realNow = Date.now.bind(Date);
+    let offset = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => realNow() + offset);
+    return (ms) => {
+      offset += ms;
+    };
+  }
+
+  it("counts as compromised as soon as the clock shows a stall past the bound, before any timer runs", async () => {
+    const jump = jumpClock();
+    const seen = await withFence(lock, async (fence) => {
+      const before = fence.compromised();
+      jump(STALL_LIMIT_MS + 1);
+      return [before, fence.compromised()];
+    });
+    expect(seen).toEqual([false, true]);
+  });
+
+  it("stays compromised after the heartbeat catches up", async () => {
+    const jump = jumpClock();
+    const seen = await withFence(lock, async (fence) => {
+      jump(STALL_LIMIT_MS + 1);
+      await new Promise((r) => setTimeout(r, 1500));
+      return fence.compromised();
+    });
+    expect(seen).toBe(true);
+  });
+
+  it("a holder whose event loop keeps turning stays uncompromised", async () => {
+    const seen = await withFence(lock, async (fence) => {
+      await new Promise((r) => setTimeout(r, 1500));
+      return fence.compromised();
+    });
+    expect(seen).toBe(false);
+  });
+
+  it("the bound sits under the shortest stall that lets a peer take the lock", () => {
+    expect(STALL_LIMIT_MS).toBeLessThan(LOCK_STALE_MS - LOCK_UPDATE_MS);
   });
 });
 

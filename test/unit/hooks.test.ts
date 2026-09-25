@@ -23,11 +23,14 @@ interface RecordedCall {
   meta: CallMeta;
 }
 
-function fakeClient(reply: (name: string, args: Record<string, unknown>, meta: CallMeta) => CallResult | Promise<CallResult>): EngineClient & { calls: RecordedCall[] } {
+// lists counts tools/list requests, which a refused turn must not send either.
+function fakeClient(reply: (name: string, args: Record<string, unknown>, meta: CallMeta) => CallResult | Promise<CallResult>): EngineClient & { calls: RecordedCall[]; lists: number } {
   const calls: RecordedCall[] = [];
-  return {
+  const client: EngineClient & { calls: RecordedCall[]; lists: number } = {
     calls,
+    lists: 0,
     async listTools() {
+      client.lists += 1;
       return { result: ok(), listing: null };
     },
     async callTool(name, args, meta) {
@@ -39,6 +42,7 @@ function fakeClient(reply: (name: string, args: Record<string, unknown>, meta: C
     },
     async close() {},
   };
+  return client;
 }
 
 function deps(client: EngineClient, cfgOverrides: Record<string, unknown> = {}): PluginDeps {
@@ -201,12 +205,48 @@ describe("recallHandler", () => {
     expect(await runSecond()).toBeUndefined();
   });
 
+  it("an allowed turn retries a degraded listing", async () => {
+    const client = fakeClient(() => ok({ text: "digest" }));
+    const d = deps(client);
+    await setup(d).runHook("before_prompt_build", {}, CTX);
+    expect(client.lists).toBe(1);
+  });
+
   it("a refused turn makes no engine call", async () => {
     const client = fakeClient(() => ok());
     const d = deps(client, { ownerIds: [] });
-    const { run } = authority(d, { prompt: "hello" }, { sessionKey: "agent:main:telegram:group:1", channel: "telegram", trigger: "user" });
+    const groupCtx = { sessionKey: "agent:main:telegram:group:1", channel: "telegram", trigger: "user" };
+    const { run } = authority(d, { prompt: "hello" }, groupCtx);
     expect(await run()).toBeUndefined();
+    expect(await setup(d).runHook("before_prompt_build", {}, groupCtx)).toBeUndefined();
+    expect(d.state.listingSource).not.toBe("live");
     expect(client.calls).toHaveLength(0);
+    expect(client.lists).toBe(0);
+  });
+
+  it("a stranger's room turn routed into the main session gets neither digest nor recall", async () => {
+    const client = fakeClient(() => ok({ text: "owner digest", namespaces: [], also_searched: [], hits: [] }));
+    const d: PluginDeps = { ...deps(client, { ownerIds: ["slack:UOWNER"] }), rootConfig: () => ({ session: { groupScope: "main" } }) };
+    const ctx = { ...CTX, channel: "slack", senderId: "USTRANGER", chatId: "C0123TEAM" };
+    const fake = setup(d);
+    expect(await fake.runHook("before_prompt_build", { prompt: "hello" }, ctx)).toBeUndefined();
+    expect(await fake.runHook("before_prompt_build", { prompt: "hello" }, ctx, { requiresToolAuthority: true, allows: ["memory_search"] })).toBeUndefined();
+    expect(client.calls).toHaveLength(0);
+    expect(client.lists).toBe(0);
+  });
+
+  it("a host config the plugin cannot read counts as rooms reaching the main session", async () => {
+    const client = fakeClient(() => ok({ text: "owner digest" }));
+    const d: PluginDeps = {
+      ...deps(client, { ownerIds: ["slack:UOWNER"] }),
+      rootConfig: () => {
+        throw new Error("runtime unavailable");
+      },
+    };
+    const fake = setup(d);
+    expect(await fake.runHook("before_prompt_build", {}, { ...CTX, channel: "slack", senderId: "USTRANGER" })).toBeUndefined();
+    expect(client.calls).toHaveLength(0);
+    expect(client.lists).toBe(0);
   });
 
   it("the outage line appears once per outage and the breaker opens after three failures", async () => {

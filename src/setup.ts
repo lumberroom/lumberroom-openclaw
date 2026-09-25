@@ -1,9 +1,11 @@
 // Interactive setup: nothing is saved until every answer is validated (spec section 14).
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { withFence } from "./auth/fence.js";
 import { login } from "./auth/login.js";
 import type { LoginIo } from "./auth/login.js";
-import { MEMORY_CORE_ID, TOKEN_ENV, resolveConfig } from "./config.js";
+import { tokenPaths } from "./auth/store.js";
+import { MEMORY_CORE_ID, SESSION_MEMORY_HOOK, TOKEN_ENV, internalHookSelection, resolveConfig, unsafeQueueModes, type UnsafeQueueModes } from "./config.js";
 import type { AuthHandle, AuthMode, EngineClient, LumberroomConfig } from "./types.js";
 
 export interface SetupAnswers {
@@ -19,6 +21,8 @@ export interface SetupPlan {
   entryConfig: Record<string, unknown>;
   addPluginsAllow: boolean;
   addToolsAlsoAllow: boolean;
+  /** Queue modes to set to followup and a summarize drop to set to old; only when owners are listed. */
+  queueToFollowup: UnsafeQueueModes;
   envToken: string | null;
   diff: string[];
 }
@@ -38,6 +42,15 @@ const PROFILE_ALLOWING_PLUGIN_TOOLS = "full";
 
 function includesString(list: unknown, value: string): boolean {
   return Array.isArray(list) && list.some((entry) => entry === value);
+}
+
+export const HOOK_NARROWING_LINE =
+  "hooks.internal.entries: listing session-memory narrows internal hooks to the entries named there; every other discovered hook stops loading unless you list it";
+
+function withSessionMemoryEntry(current: Record<string, unknown>): Record<string, unknown> {
+  const hooks = rec(current.hooks);
+  const internal = rec(hooks.internal);
+  return { ...current, hooks: { ...hooks, internal: { ...internal, entries: { ...rec(internal.entries), [SESSION_MEMORY_HOOK]: { enabled: false } } } } };
 }
 
 /** Validates the shape of the answers and decides what setup will write; throws ConfigError on a bad answer. */
@@ -68,20 +81,34 @@ export function planSetup(current: Record<string, unknown>, answers: SetupAnswer
   const alreadyAllowed = includesString(toolsBlock.alsoAllow, "lumberroom") || includesString(toolsBlock.allow, "lumberroom");
   const addToolsAlsoAllow = hidesPluginTools && !alreadyAllowed;
 
+  const unsafeQueue = answers.ownerIds.length ? unsafeQueueModes(current) : { mode: null, drop: null, byChannel: [] };
+
+  // With internal hooks on and no entries, OpenClaw loads every discovered hook. Any entry, even a
+  // disabled one, turns the selection into an allowlist (OC src/hooks/configured.ts), and no entry
+  // form avoids that, so the owner sees it before confirming.
+  const hooksBefore = internalHookSelection(current);
+  const narrowsHooks = hooksBefore.configured && hooksBefore.names === null && internalHookSelection(withSessionMemoryEntry(current)).names !== null;
+
   const diff = [
     'plugins.slots.memory = "lumberroom"',
     "plugins.entries.lumberroom.enabled = true",
     "plugins.entries.lumberroom.hooks.allowConversationAccess = true",
     `plugins.entries.lumberroom.config = ${JSON.stringify(entryConfig)}`,
     "plugins.entries.memory-core.enabled = false",
+    `hooks.internal.entries.${SESSION_MEMORY_HOOK}.enabled = false`,
+    ...(narrowsHooks ? [HOOK_NARROWING_LINE] : []),
     ...(addPluginsAllow ? ['plugins.allow += "lumberroom"'] : []),
     ...(addToolsAlsoAllow ? ['tools.alsoAllow (or tools.allow, whichever is set) += "lumberroom"'] : []),
+    ...(unsafeQueue.mode !== null ? ['messages.queue.mode = "followup"'] : []),
+    ...(unsafeQueue.drop !== null ? ['messages.queue.drop = "old"'] : []),
+    ...unsafeQueue.byChannel.map(({ channel }) => `messages.queue.byChannel.${channel} = "followup"`),
   ];
 
   return {
     entryConfig,
     addPluginsAllow,
     addToolsAlsoAllow,
+    queueToFollowup: unsafeQueue,
     envToken: answers.auth === "token" ? (answers.token ?? null) : null,
     diff,
   };
@@ -102,6 +129,24 @@ export function applySetup(draft: Record<string, unknown>, plan: SetupPlan): voi
 
   const memoryCore = (entries[MEMORY_CORE_ID] = rec(entries[MEMORY_CORE_ID]));
   memoryCore.enabled = false;
+
+  const hooksBlock = (draft.hooks = rec(draft.hooks));
+  const internal = (hooksBlock.internal = rec(hooksBlock.internal));
+  const internalEntries = (internal.entries = rec(internal.entries));
+  const sessionMemory = (internalEntries[SESSION_MEMORY_HOOK] = rec(internalEntries[SESSION_MEMORY_HOOK]));
+  sessionMemory.enabled = false;
+
+  const { mode: unsafeMode, drop: unsafeDrop, byChannel: unsafeChannels } = plan.queueToFollowup;
+  if (unsafeMode !== null || unsafeDrop !== null || unsafeChannels.length) {
+    const messages = (draft.messages = rec(draft.messages));
+    const queue = (messages.queue = rec(messages.queue));
+    if (unsafeMode !== null) queue.mode = "followup";
+    if (unsafeDrop !== null) queue.drop = "old";
+    if (unsafeChannels.length) {
+      const byChannel = (queue.byChannel = rec(queue.byChannel));
+      for (const { channel } of unsafeChannels) byChannel[channel] = "followup";
+    }
+  }
 
   if (plan.addPluginsAllow) {
     const allow = Array.isArray(plugins.allow) ? (plugins.allow as unknown[]) : [];
@@ -156,7 +201,23 @@ export interface CliDeps {
   stateDir(): string;
   io: CliIo;
   mutateConfig(mutate: (draft: Record<string, unknown>) => void): Promise<void>;
-  makeClient(cfg: LumberroomConfig): { client: EngineClient; auth: AuthHandle };
+  /** stateDir overrides where the OAuth handle reads oauth.json; setup points it at its staging copy. */
+  makeClient(cfg: LumberroomConfig, opts?: { stateDir?: string }): { client: EngineClient; auth: AuthHandle };
+}
+
+/** A private directory beside oauth.json, so the promoting rename stays on one file system. */
+function makeSignInStaging(stateDir: string): string {
+  const parent = dirname(tokenPaths(stateDir).file);
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  return mkdtempSync(join(parent, ".setup-"));
+}
+
+/** Replaces oauth.json with the staged sign-in under the live fence, so a peer mid-refresh cannot write over it. */
+async function installSignIn(stagingDir: string, stateDir: string): Promise<void> {
+  const { file, lock } = tokenPaths(stateDir);
+  await withFence(lock, async () => {
+    renameSync(tokenPaths(stagingDir).file, file);
+  });
 }
 
 /** Opening a browser is best-effort; the printed sign-in URL (spec 7.2 step 2) is the real fallback. */
@@ -166,7 +227,11 @@ async function openBrowserBestEffort(url: string): Promise<void> {
   const args = platform === "win32" ? ["/c", "start", '""', url] : [url];
   try {
     const { spawn } = await import("node:child_process");
-    spawn(command, args, { stdio: "ignore", detached: true }).unref();
+    const child = spawn(command, args, { stdio: "ignore", detached: true });
+    // A missing opener (ENOENT on a headless host) arrives as an 'error' event after spawn returns;
+    // with no listener it becomes an uncaught exception that ends the whole CLI.
+    child.on("error", () => undefined);
+    child.unref();
   } catch {
     // The sign-in URL was already printed by login(); nothing else to do here.
   }
@@ -238,43 +303,52 @@ export async function runSetup(deps: CliDeps): Promise<number> {
   if (auth === "token") probeConfig.token = token ?? "";
   const cfg: LumberroomConfig = resolveConfig(probeConfig);
 
-  const { client, auth: authHandle } = deps.makeClient(cfg);
+  // Spec 14: nothing is saved until the owner confirms, and oauth.json counts. The sign-in lands in
+  // staging and replaces the running one only after the config write.
+  const stateDir = deps.stateDir();
+  const staging = auth === "oauth" ? makeSignInStaging(stateDir) : null;
   try {
-    if (auth === "token") {
-      const res = await client.admin("GET", "/admin/whoami", null, { timeoutMs: cfg.connectTimeoutMs });
-      if (res.status !== 200) {
-        io.print(`lumberroom refused the configured token (${res.status}). Check the token and its grant.`);
-        return 1;
+    const { client } = deps.makeClient(cfg, staging ? { stateDir: staging } : undefined);
+    try {
+      if (auth === "token") {
+        const res = await client.admin("GET", "/admin/whoami", null, { timeoutMs: cfg.connectTimeoutMs });
+        if (res.status !== 200) {
+          io.print(`lumberroom refused the configured token (${res.status}). Check the token and its grant.`);
+          return 1;
+        }
+      } else {
+        try {
+          await login(cfg, { stateDir: staging!, openBrowser: true, io: loginIoFrom(io) });
+          if (!existsSync(tokenPaths(staging!).file)) throw new Error("sign-in finished without storing a token; run setup again");
+        } catch (err) {
+          io.print(err instanceof Error ? err.message : String(err));
+          return 1;
+        }
+        const listed = await client.listTools({ invocation: "cli", timeoutMs: cfg.connectTimeoutMs });
+        if (listed.result.kind !== "ok") {
+          io.print(`lumberroom signed in but tools/list failed: ${listed.result.error ?? listed.result.kind}`);
+          return 1;
+        }
       }
-    } else {
-      try {
-        await login(cfg, { stateDir: deps.stateDir(), openBrowser: true, io: loginIoFrom(io) });
-      } catch (err) {
-        io.print(err instanceof Error ? err.message : String(err));
-        return 1;
-      }
-      const listed = await client.listTools({ invocation: "cli", timeoutMs: cfg.connectTimeoutMs });
-      if (listed.result.kind !== "ok") {
-        io.print(`lumberroom signed in but tools/list failed: ${listed.result.error ?? listed.result.kind}`);
-        return 1;
-      }
+    } catch (err) {
+      io.print(err instanceof Error ? err.message : String(err));
+      return 1;
+    } finally {
+      await client.close(3000);
     }
-  } catch (err) {
-    io.print(err instanceof Error ? err.message : String(err));
-    return 1;
+
+    for (const line of plan.diff) io.print(line);
+    const confirmed = await askYesNo(io, "Save this configuration?", true);
+    if (!confirmed) {
+      io.print("aborted, nothing saved");
+      return 1;
+    }
+
+    await deps.mutateConfig((draft) => applySetup(draft, plan));
+    if (plan.envToken) writeEnvToken(stateDir, plan.envToken);
+    if (staging) await installSignIn(staging, stateDir);
+    return 0;
   } finally {
-    await client.close(3000);
+    if (staging) rmSync(staging, { recursive: true, force: true });
   }
-
-  for (const line of plan.diff) io.print(line);
-  const confirmed = await askYesNo(io, "Save this configuration?", true);
-  if (!confirmed) {
-    io.print("aborted, nothing saved");
-    return 1;
-  }
-
-  await deps.mutateConfig((draft) => applySetup(draft, plan));
-  if (plan.envToken) writeEnvToken(deps.stateDir(), plan.envToken);
-
-  return 0;
 }

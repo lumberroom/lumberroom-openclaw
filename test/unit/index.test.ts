@@ -1,9 +1,17 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createInterface } from "node:readline/promises";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import entry from "../../src/index.js";
 import { createFakeApi, type FakeApi } from "../fakes/api.js";
+
+// Spied so a test can prove register() opens no readline interface: one in terminal mode puts a
+// foreground gateway's stdin into raw mode and swallows Ctrl-C.
+vi.mock("node:readline/promises", async (importOriginal) => {
+  const real = await importOriginal<typeof import("node:readline/promises")>();
+  return { ...real, createInterface: vi.fn(real.createInterface) };
+});
 
 const MANIFEST = JSON.parse(readFileSync(new URL("../../openclaw.plugin.json", import.meta.url), "utf8")) as { contracts: { tools: string[] } };
 
@@ -56,6 +64,12 @@ describe("register", () => {
     expect(fake.resolveTools({ sessionKey: "agent:main:main" })).toEqual([]);
   });
 
+  it("register opens no readline interface over stdin", () => {
+    vi.mocked(createInterface).mockClear();
+    register({ pluginConfig: { auth: "token", token: "t" } });
+    expect(createInterface).not.toHaveBeenCalled();
+  });
+
   it("cli-metadata registration touches no runtime", () => {
     const fake = register({ registrationMode: "cli-metadata" });
     expect(fake.cli).toHaveLength(1);
@@ -69,6 +83,14 @@ describe("register", () => {
     const offered = fake.resolveTools({ sessionKey: "agent:main:main" }).map((t) => t.name);
     expect(offered.length).toBeGreaterThan(0);
     for (const name of offered) expect(MANIFEST.contracts.tools).toContain(name);
+  });
+
+  it("the gate reads the host config, so a room routed into the main session admits only listed owners", async () => {
+    const fake = register({ pluginConfig: { auth: "token", token: "t", ownerIds: ["slack:UOWNER"] } });
+    (fake.api.runtime.config.current() as Record<string, unknown>).session = { groupScope: "main" };
+    const stranger = { sessionKey: "agent:main:main", messageChannel: "slack", requesterSenderId: "USTRANGER", nativeChannelId: "C0123TEAM" };
+    expect(fake.resolveTools(stranger)).toEqual([]);
+    expect(fake.resolveTools({ ...stranger, requesterSenderId: "UOWNER" }).length).toBeGreaterThan(0);
   });
 
   it("the guard reads the workspace from the host runtime for the hook's agent", async () => {

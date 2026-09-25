@@ -1,10 +1,11 @@
 // openclaw lumberroom setup | login | logout | status | import. Spec section 14.
-import { createInterface } from "node:readline/promises";
+import { createInterface as createLineReader } from "node:readline";
+import { createInterface, type Interface } from "node:readline/promises";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-input-runtime";
 import { login, logout } from "./auth/login.js";
-import { resolveConfig, sidecarCheck } from "./config.js";
-import { MissingGrant } from "./errors.js";
+import { resolveConfig, sessionMemoryHookOff, sidecarCheck, unsafeQueueModes } from "./config.js";
+import { InputClosed, MissingGrant } from "./errors.js";
 import { readEntries, runImport } from "./importer.js";
 import { loginIoFrom, runSetup, type CliDeps, type CliIo } from "./setup.js";
 import type { LumberroomConfig } from "./types.js";
@@ -36,6 +37,7 @@ export interface StatusReport {
   slotOwner: string | null;
   allowConversationAccess: boolean;
   sidecar: { dreamingOff: boolean; memoryCoreOff: boolean };
+  sessionMemoryHookOff: boolean;
   reachable: boolean;
   serverInfo: { name: string; version: string } | null;
   protocolVersion: string | null;
@@ -58,12 +60,27 @@ export async function runStatusCommand(deps: CliDeps, opts: { json: boolean }): 
   const sidecar = sidecarCheck(deps.cliConfig);
   if (!sidecar.dreamingOff) problems.push("plugins.entries.lumberroom.config.dreaming.enabled is not false");
   if (!sidecar.memoryCoreOff) problems.push("plugins.entries.memory-core.enabled is not false");
+  const sessionHookOff = sessionMemoryHookOff(deps.cliConfig);
+  if (!sessionHookOff) problems.push("hooks.internal.entries.session-memory.enabled is not false");
 
   let cfg: LumberroomConfig | null = null;
   try {
     cfg = resolveConfig(deps.pluginConfig);
   } catch (err) {
     problems.push(err instanceof Error ? err.message : String(err));
+  }
+
+  if (cfg?.ownerIds.length) {
+    const unsafe = unsafeQueueModes(deps.cliConfig);
+    const steers = (key: string, mode: string) =>
+      `${key} is ${JSON.stringify(mode)}; a message from anyone in a shared chat can steer into an owner's run. Set it to "followup"`;
+    if (unsafe.mode !== null) problems.push(steers("messages.queue.mode", unsafe.mode));
+    if (unsafe.drop !== null) {
+      problems.push(
+        `messages.queue.drop is ${JSON.stringify(unsafe.drop)}; dropped messages from anyone fold into one turn that can carry an owner's identity. Set it to "old"`,
+      );
+    }
+    for (const { channel, mode } of unsafe.byChannel) problems.push(steers(`messages.queue.byChannel.${channel}`, mode));
   }
 
   let reachable = false;
@@ -116,6 +133,7 @@ export async function runStatusCommand(deps: CliDeps, opts: { json: boolean }): 
     slotOwner: owner,
     allowConversationAccess,
     sidecar,
+    sessionMemoryHookOff: sessionHookOff,
     reachable,
     serverInfo,
     protocolVersion,
@@ -134,6 +152,7 @@ export async function runStatusCommand(deps: CliDeps, opts: { json: boolean }): 
     io.print(`conversation access: ${report.allowConversationAccess}`);
     io.print(`dreaming.enabled is false: ${sidecar.dreamingOff}`);
     io.print(`memory-core.enabled is false: ${sidecar.memoryCoreOff}`);
+    io.print(`session-memory hook is off: ${sessionHookOff}`);
     io.print(`reachable: ${report.reachable}`);
     if (serverInfo) io.print(`server: ${serverInfo.name} ${serverInfo.version}, protocol ${protocolVersion ?? "unknown"}`);
     if (reachable) io.print(`tools: ${tools.join(", ")}`);
@@ -227,72 +246,189 @@ export async function runImportCommand(deps: CliDeps, opts: { dryRun: boolean; w
   }
 }
 
-function readSecret(question: string): Promise<string> {
+/** Reads one line with the TTY in raw mode so nothing echoes. No readline may be open meanwhile. */
+function readSecret(question: string, input: NodeJS.ReadStream, output: NodeJS.WriteStream): Promise<string> {
   return new Promise((resolvePromise, reject) => {
-    const stdin = process.stdin;
-    process.stdout.write(question.endsWith(" ") ? question : `${question} `);
-    let input = "";
-
-    if (!(stdin.isTTY && typeof stdin.setRawMode === "function")) {
-      // No TTY to mute (a test harness or piped input): read one line with no echo control.
-      let buffered = "";
-      const onData = (chunk: Buffer) => {
-        buffered += chunk.toString("utf8");
-        const newline = buffered.indexOf("\n");
-        if (newline < 0) return;
-        stdin.removeListener("data", onData);
-        process.stdout.write("\n");
-        resolvePromise(buffered.slice(0, newline).replace(/\r$/, ""));
-      };
-      stdin.on("data", onData);
-      return;
-    }
-
-    stdin.setRawMode(true);
-    stdin.resume();
+    output.write(question.endsWith(" ") ? question : `${question} `);
+    let typed = "";
+    const finish = (settle: () => void) => {
+      input.setRawMode(false);
+      input.removeListener("data", onData);
+      input.pause();
+      settle();
+    };
     const onData = (chunk: Buffer) => {
       for (const ch of chunk.toString("utf8")) {
         if (ch === "\n" || ch === "\r") {
-          stdin.setRawMode?.(false);
-          stdin.removeListener("data", onData);
-          process.stdout.write("\n");
-          resolvePromise(input);
-          return;
+          output.write("\n");
+          return finish(() => resolvePromise(typed));
         }
-        if (ch === "\u0003") {
-          stdin.setRawMode?.(false);
-          stdin.removeListener("data", onData);
-          reject(new Error("sign-in cancelled"));
-          return;
-        }
+        if (ch === "\u0003") return finish(() => reject(new Error("sign-in cancelled")));
         if (ch === "\u007f" || ch === "\b") {
-          input = input.slice(0, -1);
+          typed = typed.slice(0, -1);
           continue;
         }
-        input += ch;
+        typed += ch;
       }
     };
-    stdin.on("data", onData);
+    input.setRawMode(true);
+    input.resume();
+    input.on("data", onData);
   });
 }
 
-/** node:readline/promises over stdin and stdout; askSecret does not echo. */
-export function createCliIo(): CliIo {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+export interface ClosableCliIo extends CliIo {
+  /** Closes any open readline interface and hands the terminal back. */
+  close(): void;
+}
+
+interface LineQueue {
+  /** The next line, or null once cancel runs. Rejects with InputClosed when stdin ends first. */
+  take(): { line: Promise<string | null>; cancel(): void };
+  close(): void;
+}
+
+/**
+ * Piped stdin delivers every line at once, before the questions that want them, and readline's
+ * question() drops a line nobody is waiting for. One 'line' listener queues them instead.
+ * terminal: false, so nothing read here is echoed to a TTY stdout.
+ */
+function pipedLineQueue(input: NodeJS.ReadableStream): LineQueue {
+  const reader = createLineReader({ input, terminal: false, crlfDelay: Infinity });
+  const buffered: string[] = [];
+  const waiters: Array<{ resolve(line: string | null): void; reject(err: Error): void }> = [];
+  let ended = false;
+  reader.on("line", (line) => {
+    const waiter = waiters.shift();
+    if (waiter) waiter.resolve(line);
+    else buffered.push(line);
+  });
+  reader.on("close", () => {
+    ended = true;
+    for (const waiter of waiters.splice(0)) waiter.reject(new InputClosed());
+  });
+  return {
+    take() {
+      if (buffered.length) return { line: Promise.resolve(buffered.shift()!), cancel() {} };
+      if (ended) return { line: Promise.reject(new InputClosed()), cancel() {} };
+      let waiter!: (typeof waiters)[number];
+      const line = new Promise<string | null>((resolve, reject) => {
+        waiter = { resolve, reject };
+        waiters.push(waiter);
+      });
+      return {
+        line,
+        cancel() {
+          const at = waiters.indexOf(waiter);
+          if (at >= 0) waiters.splice(at, 1);
+          waiter.resolve(null);
+        },
+      };
+    },
+    close: () => reader.close(),
+  };
+}
+
+/** Pasted lines from the queue. return() cancels a pending read, so the line goes to the next question. */
+function queuedPastes(queue: LineQueue): AsyncIterable<string> {
+  return {
+    [Symbol.asyncIterator]() {
+      let done = false;
+      let pending: ReturnType<LineQueue["take"]> | null = null;
+      return {
+        async next(): Promise<IteratorResult<string>> {
+          if (done) return { done: true, value: undefined };
+          const read = (pending = queue.take());
+          try {
+            const line = await read.line;
+            if (line === null) return { done: true, value: undefined };
+            return { done: false, value: line };
+          } catch (err) {
+            if (!(err instanceof InputClosed)) throw err;
+            done = true;
+            return { done: true, value: undefined };
+          } finally {
+            if (pending === read) pending = null;
+          }
+        },
+        async return(): Promise<IteratorResult<string>> {
+          done = true;
+          pending?.cancel();
+          return { done: true, value: undefined };
+        },
+      };
+    },
+  };
+}
+
+/**
+ * Piped stdin reads through pipedLineQueue. A TTY uses
+ * node:readline/promises over stdin and stdout, opened on first use. A terminal-mode interface puts
+ * stdin in raw mode and echoes keystrokes, so none may exist at register time (the gateway would
+ * lose Ctrl-C) or while askSecret reads.
+ */
+export function createCliIo(): ClosableCliIo {
+  const input = process.stdin;
+  const output = process.stdout;
+  if (!input.isTTY) return createPipedCliIo(input, output);
+  let rl: Interface | null = null;
+  const open = (): Interface => {
+    if (rl) return rl;
+    const opened = createInterface({ input, output });
+    opened.once("close", () => {
+      if (rl === opened) rl = null;
+    });
+    rl = opened;
+    return opened;
+  };
+  const release = () => {
+    rl?.close();
+    rl = null;
+  };
+  const ask = async (question: string, fallback?: string) => {
+    const suffix = fallback ? ` [${fallback}]` : "";
+    const answer = (await open().question(`${question}${suffix} `)).trim();
+    return answer || (fallback ?? "");
+  };
   return {
     print(line) {
-      process.stdout.write(`${line}\n`);
+      output.write(`${line}\n`);
     },
-    async ask(question, fallback) {
-      const suffix = fallback ? ` [${fallback}]` : "";
-      const answer = (await rl.question(`${question}${suffix} `)).trim();
-      return answer || (fallback ?? "");
-    },
-    askSecret(question) {
-      return readSecret(question);
+    ask,
+    async askSecret(question) {
+      if (typeof input.setRawMode !== "function") return (await open().question(question.endsWith(" ") ? question : `${question} `)).trim();
+      release();
+      return readSecret(question, input, output);
     },
     pastedLines(): AsyncIterable<string> {
-      return rl;
+      return open();
+    },
+    close: release,
+  };
+}
+
+function createPipedCliIo(input: NodeJS.ReadableStream, output: NodeJS.WritableStream): ClosableCliIo {
+  let queue: LineQueue | null = null;
+  const lines = (): LineQueue => (queue ??= pipedLineQueue(input));
+  const read = async (prompt: string): Promise<string> => {
+    output.write(prompt.endsWith(" ") ? prompt : `${prompt} `);
+    const line = await lines().take().line;
+    output.write("\n");
+    return (line ?? "").trim();
+  };
+  return {
+    print(line) {
+      output.write(`${line}\n`);
+    },
+    async ask(question, fallback) {
+      const answer = await read(`${question}${fallback ? ` [${fallback}]` : ""}`);
+      return answer || (fallback ?? "");
+    },
+    askSecret: (question) => read(question),
+    pastedLines: () => queuedPastes(lines()),
+    close() {
+      queue?.close();
+      queue = null;
     },
   };
 }
@@ -316,15 +452,33 @@ async function resolveTokenRef(pluginConfig: unknown, rootConfig: unknown): Prom
   }
 }
 
-export function registerLumberroomCli(api: OpenClawPluginApi, deps: Omit<CliDeps, "cliConfig" | "workspaceDir">): void {
+export type CliRegistrationDeps = Omit<CliDeps, "cliConfig" | "workspaceDir" | "io"> & {
+  /** Called once per action, never at register time; the action closes it before returning. */
+  makeIo(): ClosableCliIo;
+};
+
+export function registerLumberroomCli(api: OpenClawPluginApi, deps: CliRegistrationDeps): void {
   api.registerCli(
     (ctx) => {
-      const fullDeps = async (): Promise<CliDeps> => ({
-        ...deps,
-        pluginConfig: await resolveTokenRef(deps.pluginConfig, ctx.config ?? {}),
-        cliConfig: (ctx.config ?? {}) as unknown as Record<string, unknown>,
-        workspaceDir: ctx.workspaceDir,
-      });
+      const { makeIo, ...rest } = deps;
+      const withDeps = async (run: (full: CliDeps) => Promise<number>): Promise<void> => {
+        const io = makeIo();
+        try {
+          process.exitCode = await run({
+            ...rest,
+            io,
+            pluginConfig: await resolveTokenRef(deps.pluginConfig, ctx.config ?? {}),
+            cliConfig: (ctx.config ?? {}) as unknown as Record<string, unknown>,
+            workspaceDir: ctx.workspaceDir,
+          });
+        } catch (err) {
+          if (!(err instanceof InputClosed)) throw err;
+          io.print(err.message);
+          process.exitCode = 1;
+        } finally {
+          io.close();
+        }
+      };
 
       const root = ctx.program.command("lumberroom").description("Set up, sign in to and import into lumberroom");
 
@@ -332,7 +486,7 @@ export function registerLumberroomCli(api: OpenClawPluginApi, deps: Omit<CliDeps
         .command("setup")
         .description("Interactive setup")
         .action(async () => {
-          process.exitCode = await runSetup(await fullDeps());
+          await withDeps((full) => runSetup(full));
         });
 
       root
@@ -340,14 +494,14 @@ export function registerLumberroomCli(api: OpenClawPluginApi, deps: Omit<CliDeps
         .description("Sign in with OAuth")
         .option("--no-browser", "print the sign-in URL instead of opening a browser")
         .action(async (opts: { browser?: boolean }) => {
-          process.exitCode = await runLoginCommand(await fullDeps(), { browser: opts.browser !== false });
+          await withDeps((full) => runLoginCommand(full, { browser: opts.browser !== false }));
         });
 
       root
         .command("logout")
         .description("Sign out and delete the stored OAuth tokens")
         .action(async () => {
-          process.exitCode = await runLogoutCommand(await fullDeps());
+          await withDeps((full) => runLogoutCommand(full));
         });
 
       root
@@ -355,7 +509,7 @@ export function registerLumberroomCli(api: OpenClawPluginApi, deps: Omit<CliDeps
         .description("Report reachability, sign-in and slot ownership")
         .option("--json", "print one JSON object")
         .action(async (opts: { json?: boolean }) => {
-          process.exitCode = await runStatusCommand(await fullDeps(), { json: opts.json === true });
+          await withDeps((full) => runStatusCommand(full, { json: opts.json === true }));
         });
 
       root
@@ -364,7 +518,7 @@ export function registerLumberroomCli(api: OpenClawPluginApi, deps: Omit<CliDeps
         .option("--dry-run", "print entries and namespaces without posting")
         .option("--workspace <dir>", "the workspace to read from")
         .action(async (opts: { dryRun?: boolean; workspace?: string }) => {
-          process.exitCode = await runImportCommand(await fullDeps(), { dryRun: opts.dryRun === true, workspace: opts.workspace });
+          await withDeps((full) => runImportCommand(full, { dryRun: opts.dryRun === true, workspace: opts.workspace }));
         });
     },
     { descriptors: [{ name: "lumberroom", description: "Set up, sign in to and import into lumberroom", hasSubcommands: true }] },

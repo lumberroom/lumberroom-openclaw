@@ -1,10 +1,11 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { createFakeApi } from "../fakes/api.js";
 import { createCliIo, registerLumberroomCli, runImportCommand, runLoginCommand, runLogoutCommand, runStatusCommand } from "../../src/cli.js";
-import { MissingGrant } from "../../src/errors.js";
+import { InputClosed, MissingGrant } from "../../src/errors.js";
 import type { CliDeps, CliIo } from "../../src/setup.js";
 import type { AdminResponse, AuthHandle, CallMeta, CallResult, EngineClient, LumberroomConfig, ToolsListing } from "../../src/types.js";
 
@@ -112,6 +113,7 @@ function baseDeps(io: CliIo, overrides: Partial<CliDeps> = {}): CliDeps {
           "memory-core": { enabled: false },
         },
       },
+      hooks: { internal: { entries: { "session-memory": { enabled: false } } } },
     },
     workspaceDir: undefined,
     stateDir: () => tempDir(),
@@ -151,6 +153,78 @@ describe("status", () => {
     expect(code).toBe(1);
     expect(io.printed).toContain("problem: plugins.entries.lumberroom.config.dreaming.enabled is not false");
     expect(io.printed).toContain("problem: plugins.entries.memory-core.enabled is not false");
+  });
+
+  // OpenClaw onboarding turns session-memory on, and it writes memory/*.md through fs where the
+  // write guard never sees it.
+  it("status names an enabled session-memory hook as a problem", async () => {
+    for (const hooks of [{ internal: { enabled: true } }, { internal: { entries: { "session-memory": { enabled: true } } } }]) {
+      const io = memoryIo();
+      const cliConfig = { ...baseDeps(io).cliConfig, hooks };
+      const code = await runStatusCommand(baseDeps(io, { cliConfig }), { json: false });
+      expect(code).toBe(1);
+      expect(io.printed).toContain("problem: hooks.internal.entries.session-memory.enabled is not false");
+    }
+  });
+
+  // N2: OpenClaw runs no internal hook discovery without a hooks block, and an allowlist that leaves
+  // session-memory out never loads it (OC src/hooks/configured.ts).
+  it.each([
+    ["no hooks block", undefined],
+    ["an allowlist without session-memory", { internal: { entries: { "command-logger": { enabled: true } } } }],
+  ])("status accepts %s, where OpenClaw cannot load session-memory", async (_label, hooks) => {
+    const io = memoryIo();
+    const cliConfig = { ...baseDeps(io).cliConfig, hooks };
+    const code = await runStatusCommand(baseDeps(io, { cliConfig }), { json: false });
+    expect(io.printed.filter((l) => l.startsWith("problem:"))).toEqual([]);
+    expect(code).toBe(0);
+  });
+
+  it("status accepts internal hooks switched off as a whole", async () => {
+    const io = memoryIo();
+    const cliConfig = { ...baseDeps(io).cliConfig, hooks: { internal: { enabled: false } } };
+    const code = await runStatusCommand(baseDeps(io, { cliConfig }), { json: false });
+    expect(io.printed.filter((l) => l.startsWith("problem:"))).toEqual([]);
+    expect(code).toBe(0);
+  });
+
+  describe("queue mode with owners listed", () => {
+    const owners = { baseUrl: "http://127.0.0.1:8794", auth: "token", token: "t", ownerIds: ["telegram:42"] };
+
+    async function problemsFor(messages: unknown, pluginConfig: unknown = owners): Promise<string[]> {
+      const io = memoryIo();
+      const cliConfig = { ...baseDeps(io).cliConfig, ...(messages === undefined ? {} : { messages }) };
+      await runStatusCommand(baseDeps(io, { cliConfig, pluginConfig }), { json: false });
+      return io.printed.filter((l) => l.startsWith("problem:"));
+    }
+
+    const SUMMARIZE =
+      'problem: messages.queue.drop is "summarize"; dropped messages from anyone fold into one turn that can carry an owner\'s identity. Set it to "old"';
+
+    it("names the default steer mode and the default summarize drop as problems", async () => {
+      expect(await problemsFor(undefined)).toEqual([
+        'problem: messages.queue.mode is "steer"; a message from anyone in a shared chat can steer into an owner\'s run. Set it to "followup"',
+        SUMMARIZE,
+      ]);
+    });
+
+    it("names a per-channel steer or collect override", async () => {
+      expect(await problemsFor({ queue: { mode: "followup", drop: "old", byChannel: { discord: "collect", telegram: "interrupt" } } })).toEqual([
+        'problem: messages.queue.byChannel.discord is "collect"; a message from anyone in a shared chat can steer into an owner\'s run. Set it to "followup"',
+      ]);
+    });
+
+    it("names an explicit summarize drop", async () => {
+      expect(await problemsFor({ queue: { mode: "followup", drop: "summarize" } })).toEqual([SUMMARIZE]);
+    });
+
+    it.each(["old", "new"])("accepts followup and interrupt with drop %s", async (drop) => {
+      expect(await problemsFor({ queue: { mode: "followup", drop, byChannel: { telegram: "interrupt" } } })).toEqual([]);
+    });
+
+    it("says nothing when no owners are listed", async () => {
+      expect(await problemsFor(undefined, { baseUrl: "http://127.0.0.1:8794", auth: "token", token: "t" })).toEqual([]);
+    });
   });
 
   it("text status prints the live tools, the server, the credential and its grants", async () => {
@@ -244,7 +318,7 @@ describe("registerLumberroomCli", () => {
     registerLumberroomCli(fake.api, {
       pluginConfig: {},
       stateDir: () => tempDir(),
-      io: memoryIo(),
+      makeIo: () => Object.assign(memoryIo(), { close() {} }),
       mutateConfig: async () => {},
       makeClient: (_cfg: LumberroomConfig) => ({ client: fakeClient({ auth: fakeAuth() }), auth: fakeAuth() }),
     });
@@ -256,21 +330,30 @@ describe("registerLumberroomCli", () => {
   });
 
   // Records each subcommand's action the way commander chains them, so a test can run one.
-  function fakeProgram(): { program: unknown; actions: Map<string, (opts: Record<string, unknown>) => Promise<void>> } {
-    const actions = new Map<string, (opts: Record<string, unknown>) => Promise<void>>();
-    const node = (name: string): Record<string, unknown> => {
-      const self: Record<string, unknown> = {};
-      self.command = (sub: string) => node(sub);
-      self.description = () => self;
-      self.option = () => self;
-      self.action = (fn: (opts: Record<string, unknown>) => Promise<void>) => {
-        actions.set(name, fn);
-        return self;
-      };
-      return self;
-    };
-    return { program: node(""), actions };
-  }
+  it("builds the terminal io inside each action and closes it before the action returns", async () => {
+    const savedExit = process.exitCode;
+    try {
+      const fake = createFakeApi({ workspaceDir: tempDir() });
+      const closed: number[] = [];
+      const makeIo = vi.fn(() => Object.assign(memoryIo(), { close: () => closed.push(makeIo.mock.calls.length) }));
+      registerLumberroomCli(fake.api, {
+        pluginConfig: {},
+        stateDir: () => tempDir(),
+        makeIo,
+        mutateConfig: async () => {},
+        makeClient: (_cfg: LumberroomConfig) => ({ client: fakeClient({ auth: fakeAuth() }), auth: fakeAuth() }),
+      });
+      const { program, actions } = fakeProgram();
+      (fake.cli[0]!.registrar as (ctx: unknown) => void)({ program, config: {}, workspaceDir: undefined });
+      expect(makeIo).not.toHaveBeenCalled();
+      await actions.get("status")!({});
+      await actions.get("logout")!({});
+      expect(makeIo).toHaveBeenCalledTimes(2);
+      expect(closed).toEqual([1, 2]);
+    } finally {
+      process.exitCode = savedExit;
+    }
+  });
 
   it("an action sees a SecretRef token resolved from the environment, which the CLI host leaves unresolved", async () => {
     // The W gate saw openclaw lumberroom status get the token as the SecretRef object while the
@@ -284,7 +367,7 @@ describe("registerLumberroomCli", () => {
       registerLumberroomCli(fake.api, {
         pluginConfig: { baseUrl: "http://127.0.0.1:8794", auth: "token", token: { source: "env", provider: "default", id: "LUMBERROOM_OPENCLAW_TOKEN" } },
         stateDir: () => tempDir(),
-        io: memoryIo(),
+        makeIo: () => Object.assign(memoryIo(), { close() {} }),
         mutateConfig: async () => {},
         makeClient: (cfg: LumberroomConfig) => {
           seen.push(cfg);
@@ -304,10 +387,183 @@ describe("registerLumberroomCli", () => {
   });
 });
 
+function fakeProgram(): { program: unknown; actions: Map<string, (opts: Record<string, unknown>) => Promise<void>> } {
+  const actions = new Map<string, (opts: Record<string, unknown>) => Promise<void>>();
+  const node = (name: string): Record<string, unknown> => {
+    const self: Record<string, unknown> = {};
+    self.command = (sub: string) => node(sub);
+    self.description = () => self;
+    self.option = () => self;
+    self.action = (fn: (opts: Record<string, unknown>) => Promise<void>) => {
+      actions.set(name, fn);
+      return self;
+    };
+    return self;
+  };
+  return { program: node(""), actions };
+}
+
+// A terminal pair readline treats as a real TTY: it switches to raw mode and echoes keystrokes.
+function fakeTerminal(): { input: PassThrough & { isTTY: boolean; isRaw: boolean; setRawMode(m: boolean): unknown }; output: PassThrough & { isTTY: boolean; columns: number }; written(): string } {
+  const input = Object.assign(new PassThrough(), { isTTY: true, isRaw: false }) as PassThrough & { isTTY: boolean; isRaw: boolean; setRawMode(m: boolean): unknown };
+  input.setRawMode = (mode: boolean) => {
+    input.isRaw = mode;
+    return input;
+  };
+  const output = Object.assign(new PassThrough(), { isTTY: true, columns: 80 }) as PassThrough & { isTTY: boolean; columns: number };
+  let text = "";
+  output.on("data", (chunk: Buffer) => (text += chunk.toString("utf8")));
+  return { input, output, written: () => text };
+}
+
+async function withTerminal<T>(term: ReturnType<typeof fakeTerminal>, run: () => Promise<T>): Promise<T> {
+  const stdin = Object.getOwnPropertyDescriptor(process, "stdin")!;
+  const stdout = Object.getOwnPropertyDescriptor(process, "stdout")!;
+  Object.defineProperty(process, "stdin", { configurable: true, enumerable: true, get: () => term.input });
+  Object.defineProperty(process, "stdout", { configurable: true, enumerable: true, get: () => term.output });
+  try {
+    return await run();
+  } finally {
+    Object.defineProperty(process, "stdin", stdin);
+    Object.defineProperty(process, "stdout", stdout);
+  }
+}
+
+const tick = () => new Promise((r) => setTimeout(r, 20));
+
 describe("createCliIo", () => {
-  it("is exported as a function", () => {
-    // Not invoked here: it opens a real readline interface over stdin, which a headless test
-    // runner cannot drive and could leave open.
-    expect(typeof createCliIo).toBe("function");
+  it("leaves the terminal alone until a question is asked", async () => {
+    const term = fakeTerminal();
+    await withTerminal(term, async () => {
+      createCliIo();
+      expect(term.input.isRaw).toBe(false);
+    });
+  });
+
+  it("does not echo the token after an earlier question on the same terminal", async () => {
+    const term = fakeTerminal();
+    await withTerminal(term, async () => {
+      const io = createCliIo();
+      const deployment = io.ask("Deployment?", "lumberroom.cloud");
+      await tick();
+      term.input.write("\r");
+      expect(await deployment).toBe("lumberroom.cloud");
+
+      const secret = io.askSecret("Token:");
+      await tick();
+      term.input.write("SECRETXYZ\r");
+      expect(await secret).toBe("SECRETXYZ");
+      expect(term.written()).toContain("Token:");
+      expect(term.written()).not.toContain("SECRETXYZ");
+      expect(term.input.isRaw).toBe(false);
+      io.close();
+    });
+  });
+
+  it("still asks and reads pasted lines after a secret prompt", async () => {
+    const term = fakeTerminal();
+    await withTerminal(term, async () => {
+      const io = createCliIo();
+      const secret = io.askSecret("Token:");
+      await tick();
+      term.input.write("s\r");
+      await secret;
+
+      const next = io.ask("Save?");
+      await tick();
+      term.input.write("y\r");
+      expect(await next).toBe("y");
+
+      const lines = io.pastedLines()[Symbol.asyncIterator]();
+      const first = lines.next();
+      await tick();
+      term.input.write("http://127.0.0.1/cb?code=x\r");
+      expect((await first).value).toBe("http://127.0.0.1/cb?code=x");
+      await lines.return?.();
+      io.close();
+      expect(term.input.isRaw).toBe(false);
+    });
+  });
+});
+
+// N5: piped answers arrive before the questions that want them, and stdin can close mid-setup.
+function pipedTerminal(): ReturnType<typeof fakeTerminal> {
+  const term = fakeTerminal();
+  term.input.isTTY = false;
+  return term;
+}
+
+describe("createCliIo with piped stdin", () => {
+  it("answers each question from lines written before it was asked, and never echoes the secret", async () => {
+    const term = pipedTerminal();
+    await withTerminal(term, async () => {
+      term.input.end("lumberroom.cloud\nSECRETXYZ\n\n");
+      await tick();
+      const io = createCliIo();
+      expect(await io.ask("Deployment?", "x")).toBe("lumberroom.cloud");
+      expect(await io.askSecret("Token:")).toBe("SECRETXYZ");
+      expect(await io.ask("Owners?", "none")).toBe("none");
+      expect(term.written()).toContain("Token:");
+      expect(term.written()).not.toContain("SECRETXYZ");
+      io.close();
+    });
+  });
+
+  it("rejects a question still pending when stdin closes", async () => {
+    const term = pipedTerminal();
+    await withTerminal(term, async () => {
+      const io = createCliIo();
+      term.input.end("lumberroom.cloud\n");
+      expect(await io.ask("Deployment?")).toBe("lumberroom.cloud");
+      await expect(io.ask("Auth?")).rejects.toBeInstanceOf(InputClosed);
+      io.close();
+    });
+  });
+
+  it("hands the line after a stopped paste reader to the next question", async () => {
+    const term = pipedTerminal();
+    await withTerminal(term, async () => {
+      const io = createCliIo();
+      const lines = io.pastedLines()[Symbol.asyncIterator]();
+      const first = lines.next();
+      term.input.write("http://127.0.0.1/cb?code=x\n");
+      expect((await first).value).toBe("http://127.0.0.1/cb?code=x");
+      const pending = lines.next();
+      await lines.return?.();
+      expect((await pending).done).toBe(true);
+      term.input.end("Y\n");
+      expect(await io.ask("Save this configuration?")).toBe("Y");
+      io.close();
+    });
+  });
+
+  it("setup exits non-zero when stdin closes with a question pending", async () => {
+    const term = pipedTerminal();
+    const savedExit = process.exitCode;
+    const mutateConfig = vi.fn(async () => {});
+    try {
+      await withTerminal(term, async () => {
+        const fake = createFakeApi({ workspaceDir: tempDir() });
+        registerLumberroomCli(fake.api, {
+          pluginConfig: {},
+          stateDir: () => tempDir(),
+          makeIo: () => createCliIo(),
+          mutateConfig,
+          makeClient: () => {
+            throw new Error("setup must stop before it connects");
+          },
+        });
+        const { program, actions } = fakeProgram();
+        (fake.cli[0]!.registrar as (ctx: unknown) => void)({ program, config: {}, workspaceDir: undefined });
+        term.input.end("lumberroom.cloud\n");
+        process.exitCode = 0;
+        await actions.get("setup")!({});
+        expect(process.exitCode).toBe(1);
+        expect(term.written()).toContain("stdin closed");
+      });
+    } finally {
+      process.exitCode = savedExit;
+    }
+    expect(mutateConfig).not.toHaveBeenCalled();
   });
 });

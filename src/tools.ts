@@ -1,7 +1,8 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { textResult } from "openclaw/plugin-sdk/tool-results";
 import { DECLARED_TOOLS } from "./config.js";
-import { identityFromToolCtx, turnAllowed } from "./gate.js";
+import { hostRootConfig, identityFromToolCtx, turnAllowed } from "./gate.js";
+import { retryListingIfDegraded } from "./service.js";
 import { exposedTools, toParameters } from "./schemas.js";
 import type { CallMeta, CallResult, LumberroomConfig, McpTool, PluginDeps, ToolCtxLike } from "./types.js";
 
@@ -70,8 +71,10 @@ function toAgentTool(tool: McpTool, cfg: LumberroomConfig, deps: PluginDeps, ctx
 function factory(ctx: ToolCtxLike, deps: PluginDeps) {
   const cfg = deps.state.cfg;
   if (!cfg) return null;
-  const verdict = turnAllowed(identityFromToolCtx(ctx), cfg);
+  const verdict = turnAllowed(identityFromToolCtx(ctx, hostRootConfig(deps)), cfg);
   if (!verdict.allowed) return null;
+  // After the gate: a refused turn sends nothing to the engine, tools/list included.
+  retryListingIfDegraded(deps);
   const tools = exposedTools(cfg, deps.state.listing, deps.state.listingSource);
   return tools.map((tool) => toAgentTool(tool, cfg, deps, ctx));
 }

@@ -38,11 +38,14 @@ interface RecordedCall {
   meta: CallMeta;
 }
 
-function fakeClient(reply: (name: string, args: Record<string, unknown>, meta: CallMeta) => CallResult): EngineClient & { calls: RecordedCall[] } {
+// lists counts tools/list requests, which a refused turn must not send either.
+function fakeClient(reply: (name: string, args: Record<string, unknown>, meta: CallMeta) => CallResult): EngineClient & { calls: RecordedCall[]; lists: number } {
   const calls: RecordedCall[] = [];
-  return {
+  const client: EngineClient & { calls: RecordedCall[]; lists: number } = {
     calls,
+    lists: 0,
     async listTools() {
+      client.lists += 1;
       return { result: ok(), listing: null };
     },
     async callTool(name, args, meta) {
@@ -54,6 +57,7 @@ function fakeClient(reply: (name: string, args: Record<string, unknown>, meta: C
     },
     async close() {},
   };
+  return client;
 }
 
 function deps(overrides: Partial<PluginDeps> = {}, cfgOverrides: Record<string, unknown> = {}): PluginDeps {
@@ -80,10 +84,22 @@ function runFactory(d: PluginDeps, toolCtx: Record<string, unknown> = { sessionK
 }
 
 describe("registerTools factory", () => {
-  it("returns null for a refused group turn", () => {
-    const d = deps({}, { ownerIds: [] });
+  it("returns null for a refused group turn and sends no tools/list", () => {
+    const client = fakeClient(() => ok());
+    const d = deps({ client }, { ownerIds: [] });
+    d.state.listingSource = "snapshot";
     const tools = runFactory(d, { sessionKey: "agent:main:telegram:group:1", requesterSenderId: "42" });
     expect(tools).toEqual([]);
+    expect(client.lists).toBe(0);
+    expect(client.calls).toHaveLength(0);
+  });
+
+  it("retries a degraded listing on an allowed turn", () => {
+    const client = fakeClient(() => ok());
+    const d = deps({ client });
+    d.state.listingSource = "snapshot";
+    runFactory(d);
+    expect(client.lists).toBe(1);
   });
 
   it("returns null while inert", () => {

@@ -57,6 +57,24 @@ describe("baseUrl", () => {
     configError(() => normalizeBaseUrl(8787));
   });
 
+  // F10: the ConfigError reaches the gateway log and, through the inert line, the model.
+  it.each([
+    ["userinfo", "https://owner:lr_s3cretT0ken@mcp.lumberroom.cloud"],
+    ["a bare username", "https://lr_s3cretT0ken@mcp.lumberroom.cloud"],
+    ["a query", "https://h/?token=lr_s3cretT0ken"],
+    ["a fragment", "https://h/#lr_s3cretT0ken"],
+    ["another scheme", "ftp://owner:lr_s3cretT0ken@h"],
+    ["a pasted token that is no URL", "lr_s3cretT0ken"],
+  ])("a baseUrl with a credential in %s never echoes it", (_label, raw) => {
+    const message = configError(() => resolveConfig({ baseUrl: raw })).message;
+    expect(message).not.toContain("lr_s3cretT0ken");
+    expect(message).toContain("baseUrl");
+  });
+
+  it("a rejected baseUrl still names its host", () => {
+    expect(configError(() => normalizeBaseUrl("https://owner:pw@evil.example")).message).toContain("evil.example");
+  });
+
   it("a path prefix survives and only the trailing /mcp is removed", () => {
     expect(normalizeBaseUrl("https://h/engine/mcp/")).toBe("https://h/engine");
     expect(normalizeBaseUrl("http://127.0.0.1:8787")).toBe("http://127.0.0.1:8787");
