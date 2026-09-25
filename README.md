@@ -24,9 +24,22 @@ The plugin writes no fact on its own. A fact enters memory only when the model c
 
 ## Install
 
+From npm, once the package is published there:
+
 ```
 openclaw plugins install @lumberroom/openclaw
 ```
+
+From a GitHub release, which works today. OpenClaw's `npm-pack:` source reads a local file, so
+download the tarball first:
+
+```
+curl -LO https://github.com/lumberroom/lumberroom-openclaw/releases/download/v1.0.0/lumberroom-openclaw-1.0.0.tgz
+openclaw plugins install npm-pack:./lumberroom-openclaw-1.0.0.tgz --force --accept-capabilities
+```
+
+A `git:` install does not work: the repository carries no built `dist/`, and OpenClaw does not run
+the build.
 
 The plugin declares tools, conversation-access hooks, a CLI command and a background service, so
 OpenClaw asks for a capability review before it loads. A non-interactive install passes
