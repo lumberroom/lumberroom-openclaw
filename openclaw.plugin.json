@@ -1,0 +1,77 @@
+{
+  "id": "lumberroom",
+  "name": "lumberroom",
+  "description": "Durable memory shared with every agent you use. Recall on every turn; writes through the engine's own tools. lumberroom.cloud or a self-hosted engine.",
+  "kind": "memory",
+  "categories": ["memory"],
+  "activation": { "onStartup": true, "onCommands": ["lumberroom"] },
+  "cliCommands": [
+    { "name": "lumberroom", "description": "Set up, sign in to and import into lumberroom", "hasSubcommands": true }
+  ],
+  "contracts": {
+    "tools": [
+      "memory_search", "memory_write", "registry_get", "memory_forget", "memory_history",
+      "registry_history", "registry_set", "alias_set", "alias_list", "review_queue", "review_decide"
+    ]
+  },
+  "toolMetadata": {
+    "memory_write": { "sideEffecting": true },
+    "memory_forget": { "sideEffecting": true },
+    "registry_set": { "sideEffecting": true },
+    "alias_set": { "sideEffecting": true },
+    "review_decide": { "sideEffecting": true }
+  },
+  "configContracts": {
+    "secretInputs": { "paths": [{ "path": "token", "expected": "string", "ownerKind": "capability" }] }
+  },
+  "uiHints": {
+    "baseUrl": { "label": "Engine URL", "placeholder": "https://mcp.lumberroom.cloud", "help": "Leave empty for lumberroom.cloud. A self-hosted engine: its origin, such as http://127.0.0.1:8787." },
+    "auth": { "label": "Sign-in", "help": "oauth: browser sign-in with openclaw lumberroom login. token: a static bearer or an lr_ API token." },
+    "token": { "label": "Token", "sensitive": true, "help": "Only for auth token." },
+    "ownerIds": { "label": "Owners in shared chats", "help": "channel:senderId entries, such as telegram:123456789. Empty refuses every group, channel and thread." },
+    "dreamingReview": { "label": "Dreaming review", "help": "lumberroom.cloud only: lets OpenClaw list and act on dreaming proposals." },
+    "dreaming": { "label": "OpenClaw dreaming", "help": "Keep enabled false while lumberroom owns memory.", "advanced": true }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "baseUrl": { "type": "string", "minLength": 1 },
+      "auth": { "type": "string", "enum": ["oauth", "token"] },
+      "token": {
+        "oneOf": [
+          { "type": "string" },
+          {
+            "type": "object",
+            "required": ["source", "provider", "id"],
+            "properties": { "source": { "type": "string" }, "provider": { "type": "string" }, "id": { "type": "string" } }
+          }
+        ]
+      },
+      "project": { "type": "string", "minLength": 1 },
+      "recall": { "type": "boolean" },
+      "digest": { "type": "boolean" },
+      "dreamingReview": { "type": "boolean" },
+      "digestMaxChars": { "type": "integer", "minimum": 0, "maximum": 50000 },
+      "recallLimit": { "type": "integer", "minimum": 1, "maximum": 20 },
+      "recallMaxChars": { "type": "integer", "minimum": 0, "maximum": 20000 },
+      "reviewInterval": { "type": "integer", "minimum": 0, "maximum": 1000 },
+      "tools": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "string",
+          "enum": ["memory_search", "memory_write", "registry_get", "memory_forget", "memory_history", "registry_history", "registry_set", "alias_set", "alias_list"]
+        }
+      },
+      "ownerIds": { "type": "array", "items": { "type": "string", "pattern": "^[^:\\s]+:\\S+$" } },
+      "triggers": { "type": "array", "items": { "type": "string", "enum": ["user", "cron", "heartbeat"] } },
+      "digestTimeoutMs": { "type": "integer", "minimum": 500, "maximum": 14000 },
+      "recallTimeoutMs": { "type": "integer", "minimum": 500, "maximum": 14000 },
+      "toolTimeoutMs": { "type": "integer", "minimum": 1000, "maximum": 120000 },
+      "connectTimeoutMs": { "type": "integer", "minimum": 500, "maximum": 30000 },
+      "oauthCallbackPort": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+      "dreaming": { "type": "object" }
+    }
+  }
+}
