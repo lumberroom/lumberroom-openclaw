@@ -1,7 +1,9 @@
 // Pins every host and SDK import the plugin makes, so an OpenClaw or SDK release that moves one
 // fails here before it fails inside a gateway. Host imports go through these subpaths and no
 // others (plan, global constraints).
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { auth, discoverOAuthServerInfo, refreshAuthorization, UnauthorizedError, type OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
@@ -12,6 +14,7 @@ import type { MemoryPluginCapability } from "openclaw/plugin-sdk/core";
 import type { OpenClawPluginApi, OpenClawPluginConfigSchema } from "openclaw/plugin-sdk/plugin-entry";
 import { afterEach, describe, expect, it } from "vitest";
 import { DECLARED_TOOLS, REVIEW_TOOLS, resolveConfig, SIDE_EFFECTING_TOOLS } from "../src/config.js";
+import { createFakeApi } from "./fakes/api.js";
 import { startFakeEngine, type FakeEngine } from "./fakes/engine.js";
 
 const read = (rel: string) => JSON.parse(readFileSync(new URL(rel, import.meta.url), "utf8")) as Record<string, unknown>;
@@ -36,6 +39,8 @@ const HOST_EXPORTS: Array<[string, () => Promise<Record<string, unknown>>, strin
   ["config-mutation", () => import("openclaw/plugin-sdk/config-mutation"), ["mutateConfigFile"]],
   ["plugin-runtime", () => import("openclaw/plugin-sdk/plugin-runtime"), ["getGlobalHookRunner"]],
   ["agent-scope-runtime", () => import("openclaw/plugin-sdk/agent-scope-runtime"), ["resolveDefaultAgentId"]],
+  // The CLI resolves a SecretRef token itself; W found the CLI host passes it unresolved.
+  ["secret-input-runtime", () => import("openclaw/plugin-sdk/secret-input-runtime"), ["resolveConfiguredSecretInputString"]],
 ];
 
 describe("openclaw/plugin-sdk subpaths", () => {
@@ -160,5 +165,27 @@ describe("src/index.ts", () => {
     expect(entry.id).toBe("lumberroom");
     expect(entry.configSchema).toBe(configSchema);
     expect(typeof entry.register).toBe("function");
+  });
+
+  it("registers through the fake api as kind memory, with contracts.tools as the factory's names and an own null flush plan", async () => {
+    const entry = (await import("../src/index.js")).default as { kind: string; register(api: unknown): void };
+    // resolveStateDir() reads OPENCLAW_STATE_DIR; a scratch directory keeps ~/.openclaw out of it.
+    const saved = process.env.OPENCLAW_STATE_DIR;
+    const stateDir = mkdtempSync(join(tmpdir(), "lumberroom-contract-"));
+    process.env.OPENCLAW_STATE_DIR = stateDir;
+    try {
+      const fake = createFakeApi({ pluginConfig: { auth: "token", token: "t" }, workspaceDir: stateDir });
+      entry.register(fake.api);
+      expect(entry.kind).toBe(MANIFEST.kind);
+      expect((fake.tools[0]!.opts as { names: string[] }).names).toEqual(MANIFEST.contracts.tools);
+      for (const tool of fake.resolveTools({ sessionKey: "agent:main:main" })) expect(MANIFEST.contracts.tools).toContain(tool.name);
+      const capability = fake.capability as Record<string, unknown>;
+      expect(Object.hasOwn(capability, "flushPlanResolver")).toBe(true);
+      expect((capability.flushPlanResolver as () => unknown)()).toBeNull();
+    } finally {
+      if (saved === undefined) delete process.env.OPENCLAW_STATE_DIR;
+      else process.env.OPENCLAW_STATE_DIR = saved;
+      rmSync(stateDir, { recursive: true, force: true });
+    }
   });
 });

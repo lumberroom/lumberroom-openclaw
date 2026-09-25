@@ -153,6 +153,17 @@ describe("status", () => {
     expect(io.printed).toContain("problem: plugins.entries.memory-core.enabled is not false");
   });
 
+  it("text status prints the live tools, the server, the credential and its grants", async () => {
+    // Spec 14 lists these for status; the W gate found the text form printed none of them.
+    const io = memoryIo();
+    const code = await runStatusCommand(baseDeps(io), { json: false });
+    expect(code).toBe(0);
+    expect(io.printed).toContain("tools: memory_search");
+    expect(io.printed).toContain("server: rmcp 3.2.0, protocol 2025-11-25");
+    expect(io.printed).toContain("credential: present (client test, may_ingest true, may_delete true)");
+    expect(io.printed.some((line) => /^round trip: \d+ ms$/.test(line))).toBe(true);
+  });
+
   it("status --json prints one object", async () => {
     const io = memoryIo();
     const code = await runStatusCommand(baseDeps(io), { json: true });
@@ -242,6 +253,54 @@ describe("registerLumberroomCli", () => {
     expect(opts.descriptors).toEqual([
       { name: "lumberroom", description: "Set up, sign in to and import into lumberroom", hasSubcommands: true },
     ]);
+  });
+
+  // Records each subcommand's action the way commander chains them, so a test can run one.
+  function fakeProgram(): { program: unknown; actions: Map<string, (opts: Record<string, unknown>) => Promise<void>> } {
+    const actions = new Map<string, (opts: Record<string, unknown>) => Promise<void>>();
+    const node = (name: string): Record<string, unknown> => {
+      const self: Record<string, unknown> = {};
+      self.command = (sub: string) => node(sub);
+      self.description = () => self;
+      self.option = () => self;
+      self.action = (fn: (opts: Record<string, unknown>) => Promise<void>) => {
+        actions.set(name, fn);
+        return self;
+      };
+      return self;
+    };
+    return { program: node(""), actions };
+  }
+
+  it("an action sees a SecretRef token resolved from the environment, which the CLI host leaves unresolved", async () => {
+    // The W gate saw openclaw lumberroom status get the token as the SecretRef object while the
+    // gateway got the string, so every CLI action in token mode read as misconfigured.
+    const saved = process.env.LUMBERROOM_OPENCLAW_TOKEN;
+    const savedExit = process.exitCode;
+    process.env.LUMBERROOM_OPENCLAW_TOKEN = "lr_from_env";
+    const seen: LumberroomConfig[] = [];
+    try {
+      const fake = createFakeApi({ workspaceDir: tempDir() });
+      registerLumberroomCli(fake.api, {
+        pluginConfig: { baseUrl: "http://127.0.0.1:8794", auth: "token", token: { source: "env", provider: "default", id: "LUMBERROOM_OPENCLAW_TOKEN" } },
+        stateDir: () => tempDir(),
+        io: memoryIo(),
+        mutateConfig: async () => {},
+        makeClient: (cfg: LumberroomConfig) => {
+          seen.push(cfg);
+          const auth = fakeAuth();
+          return { client: fakeClient({ auth }), auth };
+        },
+      });
+      const { program, actions } = fakeProgram();
+      (fake.cli[0]!.registrar as (ctx: unknown) => void)({ program, config: {}, workspaceDir: undefined });
+      await actions.get("status")!({});
+      expect(seen.map((c) => c.token)).toEqual(["lr_from_env"]);
+    } finally {
+      if (saved === undefined) delete process.env.LUMBERROOM_OPENCLAW_TOKEN;
+      else process.env.LUMBERROOM_OPENCLAW_TOKEN = saved;
+      process.exitCode = savedExit;
+    }
   });
 });
 

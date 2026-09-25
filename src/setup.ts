@@ -31,10 +31,10 @@ function rec(v: unknown): Record<string, unknown> {
   return isRecord(v) ? v : {};
 }
 
-// Design target pending L0 step 5 (docs/plan.md): the profiles that were expected to list only the
-// built-in memory-core tools and so hide a plugin's memory_search unless tools.alsoAllow names it.
-// L0 has not run against a real OpenClaw gateway; confirm or correct this set before relying on it.
-const PROFILES_HIDING_PLUGIN_TOOLS = new Set(["coding", "messaging"]);
+// Every OpenClaw profile but full allows a fixed list of core tool ids (OC/src/agents/tool-catalog.ts
+// CORE_TOOL_PROFILES), so a plugin's tools pass only when tools.alsoAllow names the plugin. The W
+// gate saw minimal and messaging hide all four default tools and coding keep only memory_search.
+const PROFILE_ALLOWING_PLUGIN_TOOLS = "full";
 
 function includesString(list: unknown, value: string): boolean {
   return Array.isArray(list) && list.some((entry) => entry === value);
@@ -64,7 +64,7 @@ export function planSetup(current: Record<string, unknown>, answers: SetupAnswer
 
   const toolsBlock = rec(current.tools);
   const profile = typeof toolsBlock.profile === "string" ? toolsBlock.profile : undefined;
-  const hidesPluginTools = profile !== undefined && PROFILES_HIDING_PLUGIN_TOOLS.has(profile);
+  const hidesPluginTools = profile !== undefined && profile !== PROFILE_ALLOWING_PLUGIN_TOOLS;
   const alreadyAllowed = includesString(toolsBlock.alsoAllow, "lumberroom") || includesString(toolsBlock.allow, "lumberroom");
   const addToolsAlsoAllow = hidesPluginTools && !alreadyAllowed;
 

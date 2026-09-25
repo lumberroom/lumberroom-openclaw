@@ -77,6 +77,10 @@ describe("planSetup", () => {
     expect(planSetup({ tools: { profile: "coding", alsoAllow: ["lumberroom"] } }, hostedAnswers).addToolsAlsoAllow).toBe(false);
   });
 
+  it("tools.alsoAllow covers the minimal profile, which the W gate saw hide every lumberroom tool", () => {
+    expect(planSetup({ tools: { profile: "minimal" } }, hostedAnswers).addToolsAlsoAllow).toBe(true);
+  });
+
   it("an owner id on webchat is refused before anything is saved", () => {
     expect(() => planSetup({}, { ...hostedAnswers, ownerIds: ["webchat:1"] })).toThrow(ConfigError);
   });

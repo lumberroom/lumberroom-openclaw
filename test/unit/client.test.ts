@@ -449,6 +449,15 @@ describe("admin and close", () => {
     expect(post!.headers["x-session-id"]).toBe("s-9");
   });
 
+  it("admin GET with a null body sends no body, as cli status and setup call it", async () => {
+    // fetch throws "Request with GET/HEAD method cannot have body" on a body of "null"; the W gate
+    // caught it through openclaw lumberroom status.
+    const e = await engine({ bearer: "t" });
+    const who = await client(e.url).admin("GET", "/admin/whoami", null, { timeoutMs: 5000 });
+    expect(who.status).toBe(200);
+    expect(e.requests[0]).toMatchObject({ method: "GET", path: "/admin/whoami" });
+  });
+
   it("admin reports a 401 to the auth handle and throws on a refused connection", async () => {
     const e = await engine({ bearer: "t" });
     const auth = stubAuth("Bearer wrong");

@@ -1727,6 +1727,8 @@ If L0 step 5 question 3 switched the probe to a gateway method, this file regist
 `probe()` calls `oc "$ST" gateway call lumberroomgate.promptBuild --params "$1"` with the flags L0
 recorded.
 
+> The gate as built is [`scripts/openclaw-plugin-test.sh`](../scripts/openclaw-plugin-test.sh), 19 steps, and it supersedes the draft below: it adds a tool-profile step, runs every OpenClaw command under `env -i` with logging kept in its work directory, and proves the write guard through the probe's tool-call route because `/tools/invoke` never offers `write` (docs/l0.md).
+
 - [ ] **Step 4: `scripts/openclaw-plugin-test.sh`** (mode 0755). The command lines that depend on
   an L0 answer carry the answer's step number in a comment; W adjusts them to what L0 recorded.
 

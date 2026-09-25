@@ -1,6 +1,7 @@
 // openclaw lumberroom setup | login | logout | status | import. Spec section 14.
 import { createInterface } from "node:readline/promises";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-input-runtime";
 import { login, logout } from "./auth/login.js";
 import { resolveConfig, sidecarCheck } from "./config.js";
 import { MissingGrant } from "./errors.js";
@@ -134,6 +135,11 @@ export async function runStatusCommand(deps: CliDeps, opts: { json: boolean }): 
     io.print(`dreaming.enabled is false: ${sidecar.dreamingOff}`);
     io.print(`memory-core.enabled is false: ${sidecar.memoryCoreOff}`);
     io.print(`reachable: ${report.reachable}`);
+    if (serverInfo) io.print(`server: ${serverInfo.name} ${serverInfo.version}, protocol ${protocolVersion ?? "unknown"}`);
+    if (reachable) io.print(`tools: ${tools.join(", ")}`);
+    if (whoami) io.print(`credential: ${credential} (client ${whoami.client}, may_ingest ${whoami.may_ingest}, may_delete ${whoami.may_delete})`);
+    else if (cfg) io.print(`credential: ${credential}`);
+    if (roundTripMs !== null) io.print(`round trip: ${roundTripMs} ms`);
     for (const problem of problems) io.print(`problem: ${problem}`);
   }
 
@@ -291,11 +297,31 @@ export function createCliIo(): CliIo {
   };
 }
 
+/**
+ * The gateway resolves a SecretRef token at start, but a CLI command gets the raw config (seen in
+ * the W gate). A ref that does not resolve stays as it was, so resolveConfig names the variable.
+ */
+async function resolveTokenRef(pluginConfig: unknown, rootConfig: unknown): Promise<unknown> {
+  if (!isRecord(pluginConfig) || !isRecord(pluginConfig.token)) return pluginConfig;
+  try {
+    const { value } = await resolveConfiguredSecretInputString({
+      config: rootConfig as Parameters<typeof resolveConfiguredSecretInputString>[0]["config"],
+      env: process.env,
+      value: pluginConfig.token,
+      path: "plugins.entries.lumberroom.config.token",
+    });
+    return value ? { ...pluginConfig, token: value } : pluginConfig;
+  } catch {
+    return pluginConfig;
+  }
+}
+
 export function registerLumberroomCli(api: OpenClawPluginApi, deps: Omit<CliDeps, "cliConfig" | "workspaceDir">): void {
   api.registerCli(
     (ctx) => {
-      const fullDeps = (): CliDeps => ({
+      const fullDeps = async (): Promise<CliDeps> => ({
         ...deps,
+        pluginConfig: await resolveTokenRef(deps.pluginConfig, ctx.config ?? {}),
         cliConfig: (ctx.config ?? {}) as unknown as Record<string, unknown>,
         workspaceDir: ctx.workspaceDir,
       });
@@ -306,7 +332,7 @@ export function registerLumberroomCli(api: OpenClawPluginApi, deps: Omit<CliDeps
         .command("setup")
         .description("Interactive setup")
         .action(async () => {
-          process.exitCode = await runSetup(fullDeps());
+          process.exitCode = await runSetup(await fullDeps());
         });
 
       root
@@ -314,14 +340,14 @@ export function registerLumberroomCli(api: OpenClawPluginApi, deps: Omit<CliDeps
         .description("Sign in with OAuth")
         .option("--no-browser", "print the sign-in URL instead of opening a browser")
         .action(async (opts: { browser?: boolean }) => {
-          process.exitCode = await runLoginCommand(fullDeps(), { browser: opts.browser !== false });
+          process.exitCode = await runLoginCommand(await fullDeps(), { browser: opts.browser !== false });
         });
 
       root
         .command("logout")
         .description("Sign out and delete the stored OAuth tokens")
         .action(async () => {
-          process.exitCode = await runLogoutCommand(fullDeps());
+          process.exitCode = await runLogoutCommand(await fullDeps());
         });
 
       root
@@ -329,7 +355,7 @@ export function registerLumberroomCli(api: OpenClawPluginApi, deps: Omit<CliDeps
         .description("Report reachability, sign-in and slot ownership")
         .option("--json", "print one JSON object")
         .action(async (opts: { json?: boolean }) => {
-          process.exitCode = await runStatusCommand(fullDeps(), { json: opts.json === true });
+          process.exitCode = await runStatusCommand(await fullDeps(), { json: opts.json === true });
         });
 
       root
@@ -338,7 +364,7 @@ export function registerLumberroomCli(api: OpenClawPluginApi, deps: Omit<CliDeps
         .option("--dry-run", "print entries and namespaces without posting")
         .option("--workspace <dir>", "the workspace to read from")
         .action(async (opts: { dryRun?: boolean; workspace?: string }) => {
-          process.exitCode = await runImportCommand(fullDeps(), { dryRun: opts.dryRun === true, workspace: opts.workspace });
+          process.exitCode = await runImportCommand(await fullDeps(), { dryRun: opts.dryRun === true, workspace: opts.workspace });
         });
     },
     { descriptors: [{ name: "lumberroom", description: "Set up, sign in to and import into lumberroom", hasSubcommands: true }] },

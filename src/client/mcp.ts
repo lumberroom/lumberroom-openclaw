@@ -261,7 +261,8 @@ export function createEngineClient(cfg: LumberroomConfig, auth: AuthHandle, opts
       const ctx: CallContext = { invocation: "cli", sessionId: meta.sessionId, deadline, attempt: freshAttempt(), phase: "call" };
       const headers: Record<string, string> = { accept: "application/json" };
       const init: RequestInit = { method, headers };
-      if (body !== undefined) {
+      // Callers pass null for a GET; fetch refuses any GET body, "null" included.
+      if (body !== undefined && body !== null) {
         headers["content-type"] = "application/json";
         init.body = JSON.stringify(body);
       }

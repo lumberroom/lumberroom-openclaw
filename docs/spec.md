@@ -717,7 +717,9 @@ posts nothing. The files stay on disk.
 
 `api.registerCli` adds `openclaw lumberroom` with `descriptors: [{name: "lumberroom", description,
 hasSubcommands: true}]` and the manifest's `cliCommands`. Actions read the resolved
-`api.pluginConfig`, `resolveStateDir()` and `mutateConfigFile`; none touches `api.runtime` (O28).
+`api.pluginConfig`, resolving a SecretRef `token` through `openclaw/plugin-sdk/secret-input-runtime`
+because the CLI host passes it unresolved, then `resolveStateDir()` and `mutateConfigFile`; none
+touches `api.runtime` (O28).
 Every action settles auth before it returns.
 
 **`setup`**, interactive. Nothing is saved until every answer is validated.
