@@ -24,13 +24,16 @@ The plugin writes no fact on its own. A fact enters memory only when the model c
 
 ## Install
 
-From npm, once the package is published there:
+From npm:
 
 ```
-openclaw plugins install @lumberroom/openclaw
+openclaw plugins install @lumberroom/openclaw --force --accept-capabilities
 ```
 
-From a GitHub release, which works today. OpenClaw's `npm-pack:` source reads a local file, so
+OpenClaw asks for `--force` on any source outside ClawHub review, npm included, and
+`--accept-capabilities` skips the capability prompt.
+
+From a GitHub release. OpenClaw's `npm-pack:` source reads a local file, so
 download the tarball first:
 
 ```
