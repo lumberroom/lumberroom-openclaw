@@ -274,6 +274,25 @@ describe("import", () => {
     const code = await runImportCommand(deps, { dryRun: false });
     expect(code).toBe(2);
   });
+
+  it("import prints a review hint that names a real lumberroom subcommand", async () => {
+    const io = memoryIo();
+    const auth = fakeAuth();
+    const client = fakeClient({
+      auth,
+      admin: (_method, path) => {
+        if (path === "/admin/ingest/runs") return { status: 200, json: { run_id: "run-1" } };
+        if (path === "/admin/ingest/proposals") return { status: 200, json: { proposals_new: 1 } };
+        return { status: 200, json: {} };
+      },
+    });
+    const deps = baseDeps(io, { workspaceDir: workspaceWithMemory(), makeClient: () => ({ client, auth }) });
+    const code = await runImportCommand(deps, { dryRun: false });
+    expect(code).toBe(0);
+    const hint = io.printed.find((line) => line.startsWith("review with:")) ?? "";
+    expect(hint).toContain("lumberroom ingest list --state proposed");
+    expect(hint).not.toContain("ingest review");
+  });
 });
 
 describe("every command settles auth before returning", () => {
