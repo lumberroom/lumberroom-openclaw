@@ -195,7 +195,9 @@ to the engine's proposal queue, never straight into the store. The import speake
 the queue regardless of how many times import runs. List the waiting entries with
 `lumberroom ingest list --state proposed` and approve them with `lumberroom ingest approve <id>...`
 (both from the [lumberroom CLI](https://github.com/lumberroom/lumberroom)), or clear them in the
-queue in the lumberroom.cloud console. A rerun reinforces existing proposals instead of
+queue in the lumberroom.cloud console. The list table shows 8-character short ids, but `approve`
+needs full UUIDs: copy them from `lumberroom ingest list --state proposed --json`, or approve a
+whole import run with `lumberroom ingest approve --run <run-id>`. A rerun reinforces existing proposals instead of
 duplicating them.
 
 A 403 means the credential lacks `mayIngest`: add `"mayIngest": true` to the `AUTH_TOKENS` grant,

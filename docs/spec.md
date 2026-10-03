@@ -778,7 +778,8 @@ queue.
    `main_model` never auto-approves (E11). A rerun is idempotent: the source key is
    `file_path#entry_uuid` (`ENG/src/http/mod.rs:1729-1734`).
 3. `POST /admin/ingest/runs/{id}/close` `{"entries_seen", "proposals_new", "proposals_reinforced"}`.
-4. Print the post report's counts and the review command: `lumberroom ingest list --state proposed`, or the queue
+4. Print the post report's counts and the review command: `lumberroom ingest list --state proposed` (full ids for
+   `ingest approve` come from `--json`; the table shows short ids), or the queue
    in the lumberroom.cloud console.
 
 A 403 means the credential lacks `mayIngest`: print the grant change (an `AUTH_TOKENS`
