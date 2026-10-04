@@ -232,7 +232,7 @@ export async function runImportCommand(deps: CliDeps, opts: { dryRun: boolean; w
       `posted ${report.posted} entries: ${report.proposalsNew} new, ${report.proposalsReinforced} reinforced, ` +
         `${report.refused} refused, ${report.blocked} blocked`,
     );
-    io.print("review with: lumberroom ingest review, or the queue in the lumberroom.cloud console.");
+    io.print("review with: lumberroom ingest list --state proposed, or the queue in the lumberroom.cloud console.");
     return 0;
   } catch (err) {
     if (err instanceof MissingGrant) {

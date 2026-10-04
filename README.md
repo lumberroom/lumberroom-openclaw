@@ -192,8 +192,13 @@ closed, matching OpenClaw's own default for `before_tool_call`.
 `USER.md` into `user:me`, and every top-level `memory/*.md` into `global`, then posts each entry
 to the engine's proposal queue, never straight into the store. The import speaker is
 `main_model`, which the engine never auto-approves, so every imported entry waits in
-`lumberroom ingest review` (or the queue in the lumberroom.cloud console) regardless of how many
-times import runs. A rerun reinforces existing proposals instead of duplicating them.
+the queue regardless of how many times import runs. List the waiting entries with
+`lumberroom ingest list --state proposed` and approve them with `lumberroom ingest approve <id>...`
+(both from the [lumberroom CLI](https://github.com/lumberroom/lumberroom)), or clear them in the
+queue in the lumberroom.cloud console. The list table shows 8-character short ids, but `approve`
+needs full UUIDs: copy them from `lumberroom ingest list --state proposed --json`, or approve a
+whole import run with `lumberroom ingest approve --run <run-id>`. A rerun reinforces existing proposals instead of
+duplicating them.
 
 A 403 means the credential lacks `mayIngest`: add `"mayIngest": true` to the `AUTH_TOKENS` grant,
 or consent with the `full` profile on lumberroom.cloud, and exit code 2 marks that case.
