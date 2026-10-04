@@ -4,6 +4,10 @@ lumberroom as OpenClaw's memory. Recall lands on every eligible turn, and writes
 engine's own tools under their own names. Works against lumberroom.cloud or a self-hosted engine,
 same code either way.
 
+[![OpenClaw memory plugin: one memory shared with Claude Code](https://i.ytimg.com/vi/ngz5lC4_0-I/maxresdefault.jpg)](https://youtu.be/ngz5lC4_0-I)
+
+More videos: [Lumberroom playlist](https://www.youtube.com/playlist?list=PLICXFDm9bubU)
+
 ## What it does
 
 - **Recall on every eligible turn.** A `context_bootstrap` digest enters the cacheable system
