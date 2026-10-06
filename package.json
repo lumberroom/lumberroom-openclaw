@@ -10,7 +10,7 @@
   "bugs": "https://github.com/lumberroom/lumberroom-openclaw/issues",
   "keywords": ["openclaw", "openclaw-plugin", "memory", "mcp", "lumberroom"],
   "engines": { "node": ">=24.16.0 <25 || >=26.1.0" },
-  "files": ["dist", "openclaw.plugin.json", "tools-snapshot.json", "README.md", "CHANGELOG.md", "LICENSE"],
+  "files": ["dist", "skills", "openclaw.plugin.json", "tools-snapshot.json", "README.md", "CHANGELOG.md", "LICENSE"],
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
