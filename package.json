@@ -1,6 +1,6 @@
 {
   "name": "@lumberroom/openclaw",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "lumberroom as OpenClaw's memory: recall on every turn, writes through the engine's own tools. lumberroom.cloud or a self-hosted engine.",
   "license": "Apache-2.0",
   "author": "the-cybersapien",
