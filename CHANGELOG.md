@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Ships the `lr-review` skill for working the dreaming review queue.
+
 ## [1.0.0] - 2026-09-26
 
 The first release, for OpenClaw 2026.9.6 and later on Node 24.16 or 26.1 and later.

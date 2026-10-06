@@ -68,7 +68,8 @@ not, run `openclaw gateway restart` before the plugin is live.
    `tools/list`. A failure here prints the reason and saves nothing; the gateway's current sign-in
    stays in place until you confirm.
 4. **Dreaming review**, hosted only, default no: whether OpenClaw may list and act on
-   lumberroom.cloud's dreaming queue (`review_queue`, `review_decide`).
+   lumberroom.cloud's dreaming queue (`review_queue`, `review_decide`). The plugin ships the
+   `lr-review` skill, which tells the model how to work that queue.
 5. **Owners**, optional: a comma-separated list of `channel:senderId` entries for shared chats.
 6. A diff of what will change, then a confirmation before it writes anything. Setup also turns off
    OpenClaw's `session-memory` hook, which writes `memory/*.md` directly, and with owners listed

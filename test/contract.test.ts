@@ -152,6 +152,13 @@ describe("openclaw.plugin.json", () => {
     expect(MANIFEST.cliCommands.map((c) => c.name)).toEqual(["lumberroom"]);
   });
 
+  it("ships the lr-review skill: the manifest lists skills/, the package carries it, the file exists", () => {
+    expect((MANIFEST as { skills?: string[] }).skills).toEqual(["skills"]);
+    expect((PACKAGE as unknown as { files: string[] }).files).toContain("skills");
+    const skill = readFileSync(new URL("../skills/lr-review/SKILL.md", import.meta.url), "utf8");
+    expect(skill).toMatch(/^---\nname: lr-review\n/);
+  });
+
   it("package.json points the host at dist/index.js and pins the SDK", () => {
     expect(PACKAGE.openclaw.extensions).toEqual(["./dist/index.js"]);
     expect(PACKAGE.dependencies["@modelcontextprotocol/sdk"]).toBe("1.30.1");

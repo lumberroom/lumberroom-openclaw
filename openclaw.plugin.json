@@ -4,6 +4,7 @@
   "description": "Durable memory shared with every agent you use. Recall on every turn; writes through the engine's own tools. lumberroom.cloud or a self-hosted engine.",
   "kind": "memory",
   "categories": ["memory"],
+  "skills": ["skills"],
   "activation": { "onStartup": true, "onCommands": ["lumberroom"] },
   "cliCommands": [
     { "name": "lumberroom", "description": "Set up, sign in to and import into lumberroom", "hasSubcommands": true }
