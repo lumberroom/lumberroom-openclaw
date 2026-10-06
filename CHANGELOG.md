@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-10-06
+
 ### Added
 
 - Ships the `lr-review` skill for working the dreaming review queue.
