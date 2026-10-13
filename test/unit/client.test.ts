@@ -212,7 +212,7 @@ describe("the MCP session", () => {
     expect(result.kind).toBe("ok");
     expect(listing).not.toBeNull();
     expect(listing!.instructions).toBe(SNAPSHOT.instructions);
-    expect(listing!.serverInfo).toEqual({ name: "rmcp", version: "3.2.0" });
+    expect(listing!.serverInfo).toEqual({ name: "rmcp", version: "3.5.1" });
     expect(listing!.protocolVersion).toBe("2025-11-25");
     expect(listing!.tools.map((t) => t.name)).toEqual(SNAPSHOT.tools.map((t) => t.name));
     expect(typeof listing!.tools[0]!.inputSchema).toBe("object");

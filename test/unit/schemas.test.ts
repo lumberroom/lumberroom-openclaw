@@ -18,7 +18,7 @@ describe("loadSnapshot", () => {
   it("reads the committed tools-snapshot.json from the package root", () => {
     const snapshot = loadSnapshot();
     expect(snapshot.protocolVersion).toBe("2025-11-25");
-    expect(snapshot.serverInfo).toEqual({ name: "rmcp", version: "3.2.0" });
+    expect(snapshot.serverInfo).toEqual({ name: "rmcp", version: "3.5.1" });
     const names = snapshot.tools.map((t) => t.name);
     expect(names).toContain("memory_search");
     expect(names).toContain("memory_write");
