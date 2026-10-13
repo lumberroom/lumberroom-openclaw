@@ -50,7 +50,7 @@ describe("fake engine in token mode", () => {
   it("the SDK client completes the transcript's handshake and lists its eight tools", async () => {
     const e = await engine({ bearer: "t" });
     const { client, transport } = await connect(e, "t");
-    expect(client.getServerVersion()).toEqual({ name: "rmcp", version: "3.2.0" });
+    expect(client.getServerVersion()).toEqual({ name: "rmcp", version: "3.5.1" });
     expect(transport.protocolVersion).toBe("2025-11-25");
     expect(transport.sessionId).toBeUndefined();
     expect(client.getInstructions()).toBe(SNAPSHOT.instructions);

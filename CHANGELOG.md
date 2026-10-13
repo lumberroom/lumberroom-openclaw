@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-10-13
+
+### Changed
+
+- `lr-review` follows the engine's larger `review_queue` read: up to 50 items per source. On a queue past 50 it works one source at a time, narrows `source` and pages with `offset` inside it, and reads every page of a source before it splits the work across workers. Merged text drops the `----- data` marker lines, which the engine refuses with `content_carries_fence`.
+
 ## [1.0.2] - 2026-10-06
 
 ### Changed
