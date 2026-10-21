@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-21
+
 ### Added
 
 - The digest follows the session's first request. The plugin sends that request to `context_bootstrap` as `query` when it has 12 characters or more after trimming and is no slash command. The Codex app-server harness sends the request alone as `currentUserMessage`, and the plugin reads that. On the acpx harness the prompt carries OpenClaw's inbound chat context ahead of the request, and the plugin strips the marked context blocks, the active goal line and the message-tool delivery hint before it measures or sends anything. A Telegram reply-quote block stays in. A room event (`messages.groupChat.unmentionedInbound: "room_event"`) sends no query. An engine with decision 0034 ([lumberroom/lumberroom](https://github.com/lumberroom/lumberroom) [PR #159](https://github.com/lumberroom/lumberroom/pull/159)) adds up to four related facts by default and orders the profile by relevance. When the first turn carries no request (a bare `/new` or `/reset`, a greeting, a slash command), the plugin serves a digest without `query` and refetches it once on the first turn that has one; that turn changes the system prompt once and costs one call. Every later turn reuses the digest's bytes. Heartbeat turns and turns with no session key send no query. Any `tool_error` on a call that carried `query` gets one retry without it in the same turn, within `digestTimeoutMs`; an older engine ignores `query`. `digestQuery: false` turns it off.
