@@ -10,6 +10,8 @@ export const LOGIN_LINE = "lumberroom is not signed in, so memory was not checke
 export const NUDGE_LINE =
   "Review the recent turns. Write each decision, preference, constraint or durable fact not yet stored with memory_write, one fact per call.";
 export const QUERY_MAX_CHARS = 1000;
+// A greeting embeds to noise and still lands near some rows, and a session spends only one query.
+export const DIGEST_QUERY_MIN_CHARS = 12;
 
 export function inertLine(reason: string): string {
   return `lumberroom is not configured (${reason}), so memory was not checked.`;

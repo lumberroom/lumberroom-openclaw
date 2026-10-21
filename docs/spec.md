@@ -7,6 +7,9 @@ or names a measurement. Source prefixes:
 
 - `OC/`: OpenClaw at `/Users/aditya/work/open-source/openclaw`, commit `4c9869c6`, package 2026.9.6.
 - `ENG/`: the engine at `/Users/aditya/work/cbrspn-tech/lumberroom`, commit `2a58597`.
+- `ENG0034/`: the same engine repository at commit `21320e1` on branch `feat/digest-project-prompt`
+  ([lumberroom/lumberroom](https://github.com/lumberroom/lumberroom)
+  [PR #159](https://github.com/lumberroom/lumberroom/pull/159)), read on 21 October 2026.
 - `HP/`: the finished Hermes plugin at `/Users/aditya/work/cbrspn-tech/lumberroom-hermes`, commit `2382dea`.
 - `SDK/`: `@modelcontextprotocol/sdk` 1.30.0 `dist/esm`, read from a local npm cache. npm's latest
   was 1.30.1 on 25 September 2026; plan step L0 re-reads the pinned version.
@@ -20,8 +23,11 @@ Plan: [plan.md](plan.md).
 An OpenClaw user who installs `@lumberroom/openclaw` and runs `openclaw lumberroom setup` gets:
 
 - **Recall on every eligible turn.** The `context_bootstrap` digest enters the cacheable system
-  prompt once per session, byte-identical on every turn of it. `memory_search` hits for the user's
-  message go ahead of that message for the model only.
+  prompt once per session. The session's first request goes with it as `query`, so the digest
+  adds the facts related to that request. When the first turn carries no request (a bare `/new`,
+  a greeting, a slash command), the plugin refetches the digest once on the first turn that does;
+  from then on its bytes stay the same on every turn. `memory_search` hits for the user's message
+  go ahead of that message for the model only.
 - **The engine's own tools under their own names.** `memory_search`, `memory_write`,
   `registry_get`, and `memory_forget` when the grant carries `mayDelete`, with the descriptions and
   schemas the engine serves from `tools/list`. The write rule keeps one source: the engine.
@@ -71,6 +77,12 @@ Inherited from the Hermes plugin (`HP/docs/spec.md` section 2, item 9, 25 Septem
 setup offers browser sign-in first and an `lr_` API token second. The code path is the same, since
 `auth: "token"` works against any `baseUrl`.
 
+Added 21 October 2026: the owner ruled on 20 October 2026 that the digest leads with the active
+project and adds the facts related to the session's request, sent as an optional `query`. The
+engine side is decision 0034 in [lumberroom/lumberroom](https://github.com/lumberroom/lumberroom)
+([PR #159](https://github.com/lumberroom/lumberroom/pull/159)). Section 8.2 sends the request and
+refetches once when the first turn carried none.
+
 **Where this spec departs from the research.** The research put the package at `ENG/client/openclaw`
 (ruling 1 replaces it), assumed `https://<tenant>.lumberroom.cloud` (ruling 2 replaces it), made
 `baseUrl` required with no cloud default (ruling 2), shipped opt-in capture on `agent_end`
@@ -80,7 +92,8 @@ no auth provider at all.
 
 ## 3. Ground truth
 
-Each line was read in source on 25 September 2026. Nothing here has run.
+Each line was read in source on 25 September 2026 unless the row names another date. Nothing here
+has run.
 
 **OpenClaw**
 
@@ -121,6 +134,8 @@ Each line was read in source on 25 September 2026. Nothing here has run.
 | O33 | the sidecar is authorized only when the slot owner's `dreaming.enabled` resolves true (default true), and never when `plugins.entries.memory-core.enabled` is false or `plugins.deny` lists `memory-core` | `OC/src/plugins/loader-shared.ts:73-139`, `OC/src/memory-host-sdk/dreaming.ts:22,364-384` |
 | O34 | tool assembly drops a plugin tool whose name is already taken and records `plugin tool name conflict`; the model and the user see nothing | `OC/src/plugins/tools.ts:688-696` |
 | O35 | a third-party plugin from a local path or archive asks for capability consent on every install; a non-interactive `plugins install` needs `--accept-capabilities`; `doctor --fix` never accepts | `OC/docs/plugins/manage-plugins.md:137-200`, `OC/src/cli/plugins-cli.ts:175` |
+| O36 | read 21 October 2026. `before_prompt_build`'s event type declares `prompt`, `currentUserMessage?`, `currentUserMessageId?` and `messages`. The harness path builds `prompt` with inbound context ahead of the request. Only the Codex app-server harness adds `currentUserMessage`; acpx passes inbound context and no `currentUserMessage`. The embedded runner sends `{prompt, messages}` only and joins inbound context after the hook. Every inbound-context header ends with the marker `⟦openclaw:ctx⟧` and opens a fenced `json` block or a prose block that ends at a blank line; the active goal line and the Telegram reply-quote block carry no marker. Two more unmarked shapes reach acpx: a room event under `messages.groupChat.unmentionedInbound: "room_event"` opens with the line `[OpenClaw room event]`, and under `messages.visibleReplies: "message_tool"` a delivery hint follows the goal line. The host exports the hint strings as `MESSAGE_TOOL_DELIVERY_HINTS` from `openclaw/plugin-sdk/message-tool-delivery-hints`, but lists that subpath as private-local and leaves its `.d.ts` out of the published files, so the plugin carries a copy of the four strings. The plugin SDK does not export the host's stripper | `OC/src/plugins/hook-before-agent-start.types.ts:22-30`, `OC/src/agents/harness/prompt-compaction-hook-helpers.ts:50-80`, `OC/extensions/codex/src/app-server/run-attempt-prompt.ts:297-309`, `OC/extensions/acpx/src/harness-attempt.ts:179-181`, `OC/src/agents/embedded-agent-runner/run/attempt-prompt-build.ts:157,496-508`, `OC/src/auto-reply/reply/inbound-context-marker.ts:16-21`, `OC/src/auto-reply/reply/inbound-meta.ts:31-42,459-474,595-785`, `OC/src/auto-reply/reply/strip-inbound-meta.ts:8,58-64,126-139,174-197`, `OC/src/auto-reply/reply/prompt-prelude.ts:17-19,151-176,198-200`, `OC/src/plugin-sdk/message-tool-delivery-hints.ts:1-14`, `OC/scripts/lib/plugin-sdk-private-local-only-subpaths.json:98`, `OC/package.json:153` |
+| O37 | read 21 October 2026. A bare `/new` or `/reset`, and `/new <text>`, run the first turn on inbound context, the daily memory notes and host startup text opening `A new session was started via /new or /reset`, with trigger `user`; a soft reset's text comes last. No hook field marks the reset | `OC/src/auto-reply/reply/get-reply-run-context.ts:316-357`, `OC/src/auto-reply/reply/prompt-prelude.ts:200-212`, `OC/src/auto-reply/reply/session-reset-prompt.ts:16,19,31` |
 
 **Engine**
 
@@ -139,6 +154,7 @@ Each line was read in source on 25 September 2026. Nothing here has run.
 | E11 | only speaker `owner_typed` can auto-approve, so `main_model` always waits for review | `ENG/src/services/ingest.rs:97-105` |
 | E12 | a project argument reduces to its last path segment as a slug | `ENG/src/domain/namespaces.rs:93-114` |
 | E13 | `scripts/lib/scratch-server.sh` stands up a throwaway engine from `lumberroom-server:0.4.0` and refuses port 8787 | `ENG/scripts/lib/scratch-server.sh:1-50` |
+| E14 | read 21 October 2026. `context_bootstrap` takes an optional `query`, trimmed, empty read as none; the digest adds up to `BOOTSTRAP_RELATED_LIMIT` (default 4) related rows above the model's floor under `### Related to this request` and ranks profile by the query. An engine before 0034 deserializes with no `deny_unknown_fields` and ignores it | `ENG0034/src/mcp/mod.rs:167-180`, `ENG0034/src/services/bootstrap.rs:134,252`, `ENG0034/docs/decisions/0034-the-digest-leads-with-the-project.md` |
 
 **MCP SDK**
 
@@ -220,6 +236,7 @@ The block lives at `plugins.entries.lumberroom.config`. The manifest's JSON Sche
 | `project` | `auto` | `auto`: the first entry of the turn's `activeProjectKeys` (`github.com/org/repo` or `path:/abs/root`), which the engine reduces to its last segment (E12); none when the list is empty. `none`: never send one. Anything else: sent as given. |
 | `recall` | `true` | Master switch for both prompt hooks. |
 | `digest` | `true` | Send the digest. |
+| `digestQuery` | `true` | Send the session's first request to `context_bootstrap` as `query` (section 8.2). |
 | `digestMaxChars` | `6000` | Digest cap, 0 to 50000. Matches the engine's `BOOTSTRAP_MAX_CHARS` default. |
 | `recallLimit` | `4` | `memory_search` limit, 1 to 20. |
 | `recallMaxChars` | `1200` | Hits block cap, 0 to 20000. |
@@ -495,10 +512,31 @@ Ordinary phase of `before_prompt_build`. Checks, each returning nothing: `recall
 inert, the gate refuses the turn, the breaker is open.
 
 - Session key for the cache: `ctx.sessionId`, else `ctx.sessionKey`.
-- Cached for this session: return the same `prependSystemContext` bytes as every earlier turn, so
-  the provider's prompt cache holds (O8).
-- Not cached: `context_bootstrap` with `{project}` on the hook client, `digestTimeoutMs`. Success:
-  format and cache. Any failure: return nothing and try again next turn.
+- The turn's request: `event.currentUserMessage` when the host sends it, else `event.prompt` with
+  the host's leading inbound-context blocks, the active goal line, the delivery hint and the
+  trailing `Context: ⟦openclaw:ctx⟧` block cut away (O36), trimmed and cut to 1000 characters. Only
+  the Codex app-server harness sends `currentUserMessage`; on acpx the plugin strips the prompt
+  itself. A blank `currentUserMessage` means no request. A Telegram reply-quote block carries no
+  marker and stays in the query, with any delivery hint behind it. A prompt whose first line is
+  `[OpenClaw room event]` carries no request on any harness, since the host tells the model the turn
+  is observed activity. The turn is eligible when `digestQuery` is on, the turn has a session key,
+  the trigger is not `heartbeat`, the request has 12 characters or more and no leading `/`, and
+  neither field contains `A new session was started via /new or /reset` (O37). The digest loads in
+  the hook that carries the text (O36).
+- Cached and the session has spent its query, or this turn is not eligible: return the same
+  `prependSystemContext` bytes as the last turn, so the provider's prompt cache holds (O8).
+- Cached, the query unspent, this turn eligible: one refetch, `context_bootstrap` with
+  `{project, query}`. The session's query is spent before the call. Success with digest text
+  replaces the cached digest, which changes the system prompt once for the session. Success with
+  empty text keeps the held digest. Any failure returns the held digest and feeds no breaker.
+- Not cached: `context_bootstrap` with `{project}`, plus `query` when the turn is eligible, on the
+  hook client, `digestTimeoutMs`. Success: format and cache; a call that carried `query` spends the
+  session's query. Any failure: return nothing and try again next turn, with that turn's text.
+- A `tool_error` on a first fetch that carried `query` gets one retry without it, in the same turn,
+  with what is left of `digestTimeoutMs`. Under 500 ms left, no retry. A `tool_error` feeds no
+  breaker, as before. No error text marks a refusal reliably, so every `tool_error` retries. The
+  cost: during an unrelated engine error each turn makes two calls until one succeeds, and a
+  fallback that succeeds spends the session's query.
 
 The digest and the search run in separate hooks, so a failed search can never drop the digest.
 
@@ -693,6 +731,9 @@ Digest, as `prependSystemContext`:
 <context_bootstrap structuredContent.text, cut at the last newline within digestMaxChars>
 ```
 
+A digest fetched with `query` can carry the engine's `### Related to this request` section (E14).
+The plugin passes it through unchanged.
+
 Per-turn block, as `prependContext`:
 
 ```
@@ -731,6 +772,8 @@ the recall hook share it. Tool calls ignore it: the model asked for them.
 | other 5xx | as above | `lumberroom answered HTTP <status>. The call may have taken effect; search before retrying.` |
 | deadline passed after send, connection dropped after send | as above | `lumberroom did not answer within <n>s. The call may have taken effect; search before retrying.` |
 | engine tool error | that part omitted this turn | the engine's text, verbatim |
+| `context_bootstrap` answers `tool_error` to a first fetch that carried `query` | one retry without `query` in the same turn, within `digestTimeoutMs` | n/a |
+| the once-per-session refetch fails | the held digest serves; no second refetch; breaker untouched | n/a |
 | 401, token mode | nothing | `lumberroom refused the configured token (401). Check plugins.entries.lumberroom.config.token and its grant.` |
 | 401, OAuth, refresh refused, or no token file | the login line once per session | `lumberroom is not signed in. Run: openclaw lumberroom login` |
 | OAuth, access token near expiry, refresh token live | the fence refreshes; the call proceeds | same |
@@ -882,8 +925,15 @@ that matter most:
 - a proxy 502 on `memory_write` reads "Nothing was stored."; a socket dropped after send reads "may
   have taken effect";
 - a gated turn makes no request at all, including a shared-chat turn with no author;
-- the digest bytes stay identical across turns of one session;
+- the digest bytes stay identical across turns of one session, apart from the one refetch below;
 - a recall that fails leaves the cached digest in place;
+- the first eligible turn's request goes as `query`, and later turns reuse that digest's bytes;
+- a reset, greeting or slash first turn sends no query, and the first eligible turn refetches once;
+- on a prompt with inbound context and no `currentUserMessage`, the query carries only the request,
+  and a greeting behind that context sends none;
+- a failed or empty refetch keeps the held digest, and three failed refetches leave the breaker
+  closed;
+- an engine that refuses `query` still serves the digest in the same turn;
 - the review tools never appear without a live listing;
 - the guard blocks `MEMORY.md`, `./memory/x.md`, `../ws/USER.md`, a symlink into `memory/`, and
   `memory.md` in lower case, and passes `notes.md`;

@@ -11,9 +11,11 @@ More videos: [Lumberroom playlist](https://www.youtube.com/playlist?list=PLICXFD
 ## What it does
 
 - **Recall on every eligible turn.** A `context_bootstrap` digest enters the cacheable system
-  prompt once per session, byte-identical on every turn of that session. `memory_search` hits for
-  the user's message go ahead of that message, for the model only; they never land in the
-  transcript.
+  prompt once per session. The session's first request goes with it as `query`, so the digest
+  adds the facts related to that request. When the first turn carries no request (a bare `/new`,
+  a greeting, a slash command), the plugin refetches the digest once on the first turn that does;
+  from then on its bytes stay the same on every turn. `memory_search` hits for the user's message
+  go ahead of that message, for the model only; they never land in the transcript.
 - **The engine's own tools, under their own names.** `memory_search`, `memory_write`,
   `registry_get`, and `memory_forget` when the credential carries `mayDelete`, with the
   descriptions and schemas the engine itself serves from `tools/list`.
@@ -111,6 +113,7 @@ typo never reopens the local store.
 | `project` | `auto` | `auto` takes the first entry of the turn's active project keys; `none` sends no project; anything else is sent as given. |
 | `recall` | `true` | Master switch for both prompt hooks. |
 | `digest` | `true` | Send the per-session digest. |
+| `digestQuery` | `true` | Send the session's first request of 12 characters or more to `context_bootstrap` as `query`, refetching the digest once if the first turn carried none. Reset turns, slash commands, heartbeat turns and turns with no session key send none. Needs an engine with decision 0034 ([lumberroom/lumberroom](https://github.com/lumberroom/lumberroom) [PR #159](https://github.com/lumberroom/lumberroom/pull/159)); an older engine ignores it. |
 | `digestMaxChars` | `6000` | Digest cap, 0 to 50000. Matches the engine's `BOOTSTRAP_MAX_CHARS` default. Design target. |
 | `recallLimit` | `4` | `memory_search` result limit, 1 to 20. Design target. |
 | `recallMaxChars` | `1200` | Per-turn hits block cap, 0 to 20000. Design target. |

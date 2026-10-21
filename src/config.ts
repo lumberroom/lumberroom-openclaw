@@ -29,11 +29,13 @@ const INTS = {
   connectTimeoutMs: [500, 30_000, 3000],
   oauthCallbackPort: [1024, 65_535, 47_632],
 } as const;
-const BOOLS = { recall: true, digest: true, dreamingReview: false } as const;
+const BOOLS = { recall: true, digest: true, digestQuery: true, dreamingReview: false } as const;
 const KNOWN = new Set<string>([
   "baseUrl", "auth", "token", "project", "tools", "ownerIds", "triggers", "dreaming",
   ...Object.keys(INTS), ...Object.keys(BOOLS),
 ]);
+/** Every key resolveConfig accepts. The contract test holds the manifest's configSchema to it. */
+export const CONFIG_KEYS: readonly string[] = [...KNOWN];
 const TRIGGERS: readonly Trigger[] = ["user", "cron", "heartbeat"];
 
 /**
@@ -265,6 +267,7 @@ export function resolveConfig(raw: unknown): LumberroomConfig {
     project: project.trim(),
     recall: bools.recall,
     digest: bools.digest,
+    digestQuery: bools.digestQuery,
     dreamingReview: bools.dreamingReview,
     ...ints,
     tools,
