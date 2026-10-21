@@ -92,6 +92,7 @@ describe("resolveConfig defaults", () => {
     expect(cfg.project).toBe("auto");
     expect(cfg.recall).toBe(true);
     expect(cfg.digest).toBe(true);
+    expect(cfg.digestQuery).toBe(true);
     expect(cfg.dreamingReview).toBe(false);
     expect(cfg.digestMaxChars).toBe(6000);
     expect(cfg.recallLimit).toBe(4);
@@ -154,7 +155,7 @@ describe("auth", () => {
 });
 
 describe("booleans and project", () => {
-  it.each(["recall", "digest", "dreamingReview"])("%s must be a boolean", (key) => {
+  it.each(["recall", "digest", "digestQuery", "dreamingReview"])("%s must be a boolean", (key) => {
     expect(configError(() => resolveConfig({ [key]: "yes" })).message).toContain(key);
     expect(resolveConfig({ [key]: false })[key as "recall"]).toBe(false);
   });

@@ -15,6 +15,15 @@ function tool(name: string): McpTool {
 }
 
 describe("loadSnapshot", () => {
+  it("the snapshot's context_bootstrap takes every argument the digest hook sends", () => {
+    const tool = loadSnapshot().tools.find((t) => t.name === "context_bootstrap")!;
+    const props = (tool.inputSchema as { properties: Record<string, { description?: string }> }).properties;
+    for (const arg of ["project", "query"]) expect(props, arg).toHaveProperty(arg);
+    expect(props.query!.description).toBe(
+      "What the person asked, in their own words; their first message works. The digest adds the\nfacts most related to it and orders the profile by relevance to it.",
+    );
+  });
+
   it("reads the committed tools-snapshot.json from the package root", () => {
     const snapshot = loadSnapshot();
     expect(snapshot.protocolVersion).toBe("2025-11-25");

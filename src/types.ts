@@ -14,6 +14,7 @@ export interface LumberroomConfig {
   project: string; // "auto" | "none" | a slug or path sent as given
   recall: boolean;
   digest: boolean;
+  digestQuery: boolean; // the session's first request goes to context_bootstrap as query
   digestMaxChars: number;
   recallLimit: number;
   recallMaxChars: number;
@@ -143,6 +144,7 @@ export interface RuntimeState {
   listingSource: ListingSource;
   lastListAttemptMs: number;
   digests: SessionLru<string>;
+  queried: SessionLru<boolean>; // true once the session has spent its one digest query
   seen: SessionLru<Set<string>>;
   turns: SessionLru<number>;
   told: SessionLru<Set<"login" | "inert" | "outage">>;

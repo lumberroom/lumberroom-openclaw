@@ -13,7 +13,7 @@ import type { AuthorizationServerMetadata, OAuthClientInformationFull, OAuthProt
 import type { MemoryPluginCapability } from "openclaw/plugin-sdk/core";
 import type { OpenClawPluginApi, OpenClawPluginConfigSchema } from "openclaw/plugin-sdk/plugin-entry";
 import { afterEach, describe, expect, it } from "vitest";
-import { DECLARED_TOOLS, REVIEW_TOOLS, resolveConfig, SIDE_EFFECTING_TOOLS } from "../src/config.js";
+import { CONFIG_KEYS, DECLARED_TOOLS, REVIEW_TOOLS, resolveConfig, SIDE_EFFECTING_TOOLS } from "../src/config.js";
 import { createFakeApi } from "./fakes/api.js";
 import { startFakeEngine, type FakeEngine } from "./fakes/engine.js";
 
@@ -144,6 +144,12 @@ describe("openclaw.plugin.json", () => {
         expect((e as Error).message, key).not.toMatch(/^unknown key/);
       }
     }
+  });
+
+  // The manifest sets additionalProperties false and OpenClaw validates plugin config against it,
+  // so a key resolveConfig accepts but the manifest leaves out is refused before the plugin loads.
+  it("every key resolveConfig knows is a configSchema key", () => {
+    for (const key of CONFIG_KEYS) expect(Object.keys(MANIFEST.configSchema.properties), key).toContain(key);
   });
 
   it("the plugin is lumberroom of kind memory with one root command", () => {

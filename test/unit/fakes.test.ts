@@ -47,6 +47,13 @@ function text(result: unknown): string {
 }
 
 describe("fake engine in token mode", () => {
+  it("the transcript's context_bootstrap lists query", async () => {
+    const e = await engine({ bearer: "t" });
+    const { client } = await connect(e, "t");
+    const tool = (await client.listTools()).tools.find((t) => t.name === "context_bootstrap")!;
+    expect(Object.keys(tool.inputSchema.properties ?? {})).toEqual(["project", "query", "rows"]);
+  });
+
   it("the SDK client completes the transcript's handshake and lists its eight tools", async () => {
     const e = await engine({ bearer: "t" });
     const { client, transport } = await connect(e, "t");
@@ -87,7 +94,7 @@ describe("fake engine in token mode", () => {
     expect(hits[0]).toMatchObject({ id: first.id, namespace: "user:me", content: "Prefers draft PRs for engine changes.", source: "fake-engine", primary: true });
     expect(Object.keys(hits[0]!)).toEqual(expect.arrayContaining(["tags", "sensitivity", "created_at", "score", "similarity"]));
 
-    const digest = structured(await client.callTool({ name: "context_bootstrap", arguments: {} }));
+    const digest = structured(await client.callTool({ name: "context_bootstrap", arguments: { query: "which PRs do I want" } }));
     expect(digest.text).toContain("Prefers draft PRs for engine changes.");
   });
 
