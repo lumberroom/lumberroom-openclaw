@@ -1,6 +1,6 @@
 // Test only. Runs the global hook runner's hooks with a context the gate chooses, inside the real
 // gateway, so the gate needs no model turn (ruling 10). The plugin's openclaw peer links to the host
-// package, so getGlobalHookRunner() returns the gateway's own runner (docs/l0.md question 3).
+// package, so getGlobalHookRunner() returns the gateway's own runner.
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { getGlobalHookRunner } from "openclaw/plugin-sdk/plugin-runtime";
 
@@ -51,7 +51,7 @@ export default definePluginEntry({
       });
       return { ordinary: ordinary ?? null, authorized: authorized ?? null };
     });
-    // /tools/invoke never offers write, edit or read (docs/l0.md question 4), so the gate drives the
+    // /tools/invoke never offers write, edit or read, so the gate drives the
     // before_tool_call guard here with a synthetic call instead.
     route(api, "/lumberroom-gate/tool-call", async (runner, body) => {
       const toolName = body.toolName ?? "write";

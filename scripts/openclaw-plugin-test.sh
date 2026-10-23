@@ -3,7 +3,7 @@
 # installed from npm, in token mode and then AUTH_MODE=oauth. No model runs anywhere in it.
 #
 #   POSTGRES_PASSWORD=... ./scripts/openclaw-plugin-test.sh --node ~/.nvm/versions/node/v24.16.0/bin/node
-#   ./scripts/openclaw-plugin-test.sh --engine-src ~/work/cbrspn-tech/lumberroom   default ../lumberroom
+#   ./scripts/openclaw-plugin-test.sh --engine-src ~/src/lumberroom   default ../lumberroom
 #   ./scripts/openclaw-plugin-test.sh --openclaw-version 2026.9.6
 #   ./scripts/openclaw-plugin-test.sh --keep       keep the scratch databases and the work directory
 #   ./scripts/openclaw-plugin-test.sh --capture    rewrite tools-snapshot.json and the transcript, then exit
@@ -247,7 +247,7 @@ then pass "snapshot matches"; else fail "snapshot drifted from the engine: rerun
 
 say "5/19 a throwaway OpenClaw with the plugin and the probe installed from npm pack"
 ST="$WORK/st-token"; WS="$WORK/ws-token"; mkdir -p "$WS"; seed_state "$ST"
-# Without --accept-capabilities and with no TTY the install stages, refuses and exits 1 (docs/l0.md question 1).
+# Without --accept-capabilities and with no TTY the install stages, refuses and exits 1.
 oc "$ST" plugins install "npm-pack:$TGZ" --force --accept-capabilities </dev/null >"$WORK/install.out" 2>&1 || die "plugin install: $(tail -5 "$WORK/install.out")"
 oc "$ST" plugins install "npm-pack:$PROBE_TGZ" --force --accept-capabilities </dev/null >>"$WORK/install.out" 2>&1 || die "probe install: $(tail -5 "$WORK/install.out")"
 printf 'LUMBERROOM_OPENCLAW_TOKEN=%s\n' "$TOKEN" >"$ST/.env"; chmod 600 "$ST/.env"
@@ -294,7 +294,7 @@ then pass "heartbeat off; lumberroom and the probe loaded with no plugin error";
 [ -s "$ST/openclaw.log" ] && pass "the gateway logs to logging.file under the work directory" || fail "no log at $ST/openclaw.log"
 
 say "9/19 tool profiles: which hide lumberroom's tools, and setup's tools.alsoAllow rule agrees"
-# tools.effective answers only for a stored session; sessions.create starts no run (docs/l0.md question 5).
+# tools.effective answers only for a stored session; sessions.create starts no run.
 gw_call "$ST" sessions.create '{"key":"agent:main:main"}' >"$WORK/session.json" 2>&1 || fail "sessions.create: $(tail -3 "$WORK/session.json")"
 # effective_tools PROFILE OUT: waits for the hot reload to report PROFILE, then lists lumberroom's tools.
 effective_tools() {
