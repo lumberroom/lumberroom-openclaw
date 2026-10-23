@@ -20,9 +20,12 @@ jobs:
         openclaw: ["2026.9.6", "latest"]
     steps:
       - uses: actions/checkout@v7
+      # check-latest, because an OpenClaw release can require a Node 24 patch newer than the one
+      # cached on the runner image: 2026.10.6 needs 24.22.1 and the image carried 24.21.0.
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
+          check-latest: true
           cache: npm
       - run: npm ci
       - name: OpenClaw ${{ matrix.openclaw }}
